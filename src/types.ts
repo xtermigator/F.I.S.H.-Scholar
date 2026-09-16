@@ -83,6 +83,8 @@ export interface Assignment {
   id: string;
   courseId: string;
   title: string;
+  type?: AssignmentType;
+  status?: WorkStatus;
   dueDate: string;
   dueTime: string;
   urgency: AssignmentUrgency;
@@ -394,6 +396,7 @@ export interface DiscussionResponse extends EntityBase {
   wordCount?: number;
   citationsUsed?: string[]; // Citation IDs
   followUpRequired: boolean;
+  followUpTaskId?: string;
   notes?: string;
 }
 

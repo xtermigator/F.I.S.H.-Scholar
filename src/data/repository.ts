@@ -209,8 +209,15 @@ export class IndexedDbRepository implements Repository {
     entity: T,
   ): Promise<T & EntityBase> {
     const stamped = stamp(entity);
-    const store = await this.tx(collection, 'readwrite');
-    await promisify(store.put(stamped));
+    const db = await this.open();
+    await new Promise<void>((resolve, reject) => {
+      const t = db.transaction(collection, 'readwrite');
+      const store = t.objectStore(collection);
+      store.put(stamped);
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
+    });
     return stamped;
   }
 
@@ -231,8 +238,15 @@ export class IndexedDbRepository implements Repository {
   }
 
   async remove(collection: Collection, id: string): Promise<void> {
-    const store = await this.tx(collection, 'readwrite');
-    await promisify(store.delete(id));
+    const db = await this.open();
+    await new Promise<void>((resolve, reject) => {
+      const t = db.transaction(collection, 'readwrite');
+      const store = t.objectStore(collection);
+      store.delete(id);
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
+    });
   }
 
   async clearDemo(): Promise<void> {

@@ -42,6 +42,13 @@ export function parseDueDate(value: string | undefined, now: Date): Date | null 
   if (lower === 'tonight' || lower === 'today') return startOfDay(now);
   if (lower === 'tomorrow') return startOfDay(new Date(now.getTime() + DAY_MS));
 
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const match = trimmed.match(dateOnly);
+  if (match) {
+    const [, y, m, d] = match;
+    return new Date(Number(y), Number(m) - 1, Number(d));
+  }
+
   const iso = Date.parse(trimmed);
   if (!Number.isNaN(iso)) return new Date(iso);
 
@@ -68,7 +75,7 @@ export function isWithinThisWeek(date: Date, now: Date): boolean {
 
 const DONE_STATUSES = new Set(['completed', 'submitted', 'graded']);
 
-export function isAssignmentDone(a: Pick<Assignment, 'urgency'> & { status?: string }): boolean {
+export function isAssignmentDone(a: Pick<Assignment, 'urgency' | 'status'>): boolean {
   if (a.status && DONE_STATUSES.has(a.status)) return true;
   return a.urgency === 'completed';
 }
@@ -131,6 +138,7 @@ export interface DueItem {
   overdue: boolean;
   dueToday: boolean;
   sourceId: string;
+  followUpRequired?: boolean;
 }
 
 export interface DashboardData {
@@ -160,6 +168,7 @@ export function collectDueItems(data: DashboardData, now: Date): DueItem[] {
     const { remaining } = replyProgress(d, responses);
     if (remaining > 0) {
       const due = parseDueDate(d.responseDeadline, now);
+      const hasFollowUp = responses.some((r) => r.followUpRequired);
       items.push(
         makeDueItem(
           `${d.id}:responses`,
@@ -168,6 +177,7 @@ export function collectDueItems(data: DashboardData, now: Date): DueItem[] {
           d.courseId,
           due,
           now,
+          hasFollowUp,
         ),
       );
     }
@@ -195,10 +205,11 @@ function makeDueItem(
   courseId: string | undefined,
   due: Date | null,
   now: Date,
+  followUpRequired = false,
 ): DueItem {
   const overdue = due != null && daysUntil(due, now) < 0;
   const today = due != null && isSameDay(due, now);
-  return { id, kind, title, courseId, due, overdue, dueToday: today, sourceId: id };
+  return { id, kind, title, courseId, due, overdue, dueToday: today, sourceId: id, followUpRequired };
 }
 
 /** Items due today or overdue (R5.1). */
@@ -225,6 +236,7 @@ export interface WorkloadResult {
   openItems: number;
   overdue: number;
   dueThisWeek: number;
+  effortMinutes: number;
 }
 
 /**
@@ -241,9 +253,17 @@ export function workloadForCourse(
   const overdue = items.filter((i) => i.overdue).length;
   const thisWeek = items.filter((i) => i.due != null && isWithinThisWeek(i.due, now)).length;
   const openItems = items.length;
+  const effortMinutes = data.assignments
+    .filter((a) => a.courseId === course.id && !isAssignmentDone(a))
+    .reduce((sum, a) => {
+      const checklistMinutes = (a.checklist || [])
+        .filter((i) => !i.completed)
+        .reduce((ck, i) => ck + Math.max(0, i.estimatedMinutes || 0), 0);
+      return sum + Math.max(0, a.estimatedMinutes || 0) + checklistMinutes;
+    }, 0);
 
   // Transparent weighting.
-  const score = openItems * 1 + thisWeek * 2 + overdue * 4;
+  const score = openItems * 1 + thisWeek * 2 + overdue * 4 + Math.round(effortMinutes / 60);
 
   let level: WorkloadLevel = 'Light';
   if (score >= 12) level = 'Critical';
@@ -254,11 +274,21 @@ export function workloadForCourse(
   if (openItems) parts.push(`${openItems} open item${openItems === 1 ? '' : 's'}`);
   if (thisWeek) parts.push(`${thisWeek} due this week`);
   if (overdue) parts.push(`${overdue} overdue`);
+  if (effortMinutes > 0) parts.push(`~${effortMinutes} min estimated effort`);
   const rationale = parts.length
     ? `${level}: ${parts.join(', ')}.`
     : `${level}: nothing outstanding.`;
 
-  return { courseId: course.id, score, level, rationale, openItems, overdue, dueThisWeek: thisWeek };
+  return {
+    courseId: course.id,
+    score,
+    level,
+    rationale,
+    openItems,
+    overdue,
+    dueThisWeek: thisWeek,
+    effortMinutes,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +318,9 @@ export function recommendedNextAction(data: DashboardData, now: Date): NextActio
     const ra = rank(a);
     const rb = rank(b);
     if (ra !== rb) return ra - rb;
+    if (!!a.followUpRequired !== !!b.followUpRequired) {
+      return a.followUpRequired ? -1 : 1;
+    }
     const at = a.due ? a.due.getTime() : Number.MAX_SAFE_INTEGER;
     const bt = b.due ? b.due.getTime() : Number.MAX_SAFE_INTEGER;
     return at - bt;

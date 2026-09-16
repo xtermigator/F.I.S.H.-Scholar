@@ -4,7 +4,11 @@ import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 
-import { listProviders, generate as aiGenerate } from "./src/server/aiProvider";
+import {
+  listProviders,
+  generate as aiGenerate,
+  getActiveProvider,
+} from "./src/server/aiProvider";
 
 dotenv.config();
 
@@ -18,8 +22,49 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+const AI_ROUTE_WINDOW_MS = 60_000;
+const AI_ROUTE_MAX_REQUESTS = 30;
+const aiRouteHits = new Map<string, { count: number; resetAt: number }>();
+
+function aiGenerateAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const token = process.env.PRIVATE_API_TOKEN;
+  if (!token) {
+    return res.status(503).json({
+      error: "AI generation route is disabled until PRIVATE_API_TOKEN is configured.",
+    });
+  }
+  const authHeader = req.headers.authorization;
+  const provided = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : "";
+  if (provided !== token) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+
+function aiGenerateRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const key = `${req.ip || "unknown"}:${req.headers.authorization || ""}`;
+  const now = Date.now();
+  const hit = aiRouteHits.get(key);
+  if (!hit || hit.resetAt <= now) {
+    aiRouteHits.set(key, { count: 1, resetAt: now + AI_ROUTE_WINDOW_MS });
+    return next();
+  }
+  if (hit.count >= AI_ROUTE_MAX_REQUESTS) {
+    return res.status(429).json({
+      error: "Rate limit exceeded for /api/ai/generate. Try again shortly.",
+    });
+  }
+  hit.count += 1;
+  aiRouteHits.set(key, hit);
+  next();
+}
+
 // Lazy initializer for GoogleGenAI
 function getGeminiClient(): GoogleGenAI | null {
+  const activeProvider = getActiveProvider();
+  if (activeProvider.id !== "gemini" || !activeProvider.isConfigured()) {
+    return null;
+  }
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     console.warn("GEMINI_API_KEY is not set. Using smart heuristic responses as fallback.");
@@ -47,10 +92,13 @@ app.get("/api/ai/providers", (_req, res) => {
 
 // 1b. Provider-agnostic generation endpoint. Degrades honestly when unconfigured — the
 // response carries `verified:false` so the client never presents fallbacks as real.
-app.post("/api/ai/generate", async (req, res) => {
+app.post("/api/ai/generate", aiGenerateAuth, aiGenerateRateLimit, async (req, res) => {
   const { system, prompt, model, json } = req.body || {};
   if (!prompt || typeof prompt !== "string") {
     return res.status(400).json({ error: "A 'prompt' string is required." });
+  }
+  if (prompt.length > 20_000 || (typeof system === "string" && system.length > 10_000)) {
+    return res.status(413).json({ error: "Prompt payload is too large." });
   }
   const result = await aiGenerate({ system, prompt, model, json: !!json });
   res.json(result);
@@ -63,50 +111,27 @@ app.post("/api/gemini/extract-syllabus", async (req, res) => {
     const ai = getGeminiClient();
 
     if (!ai) {
-      // Return structured fallback
       return res.json({
-        success: true,
+        success: false,
+        verified: false,
+        note: "Syllabus extraction requires a configured Gemini provider.",
         extracted: {
           professor: {
-            name: "Dr. Catherine Bennett",
-            email: "cbennett@university.edu",
-            officeHours: "Tuesdays & Thursdays 2:00 PM - 4:00 PM EST (Zoom)",
-            preferredCommunication: "Canvas Inbox or Email (24hr response time on weekdays)"
+            name: "",
+            email: "",
+            officeHours: "",
+            preferredCommunication: "",
           },
-          gradingScale: [
-            { item: "Discussion Board & Peer Responses", percentage: 25 },
-            { item: "Case Study Analysis Papers", percentage: 30 },
-            { item: "Midterm Synthesis Project", percentage: 20 },
-            { item: "Final Applied Capstone", percentage: 25 }
-          ],
-          assignments: [
-            {
-              title: "Module 1 Initial Discussion & Peer Response",
-              dueDate: "Tonight at 11:59 PM",
-              points: 25,
-              weight: "5%",
-              description: "Analyze the core tenets of Universal Design in Educational Settings and respond to at least 2 peers."
-            },
-            {
-              title: "Literature Review on Transition Barriers",
-              dueDate: "Next Thursday at 11:59 PM",
-              points: 100,
-              weight: "15%",
-              description: "Synthesize at least 5 peer-reviewed sources discussing systemic accommodations."
-            }
-          ],
+          gradingScale: [],
+          assignments: [],
           policies: {
-            lateWork: "10% deduction per 24 hours. Accommodations with prior notice granted without penalty.",
-            attendance: "Active participation in weekly synchronous discussions or asynchronous equivalents.",
-            aiPolicy: "AI tools may be used for brainstorming and outlining with explicit citation and authorship logs. Submitting unmodified generative text violates academic integrity.",
-            accommodations: "Students registered with Student Accessibility Services receive documented modifications including 1.5x time and flexible deadlines upon request."
+            lateWork: "",
+            attendance: "",
+            aiPolicy: "",
+            accommodations: "",
           },
-          readings: [
-            "Evans, N. J., et al. (2017). Disability in Higher Education: A Social Justice Perspective.",
-            "Wong, A. (2020). Disability Visibility: First-Person Stories from the Twenty-First Century.",
-            "Burgstahler, S. (2015). Universal Design in Higher Education: From Principles to Practice."
-          ]
-        }
+          readings: [],
+        },
       });
     }
 
@@ -196,25 +221,14 @@ app.post("/api/gemini/document-intelligence", async (req, res) => {
 
     if (!ai) {
       return res.json({
-        docType: "Journal Article / Reading",
-        suggestedCourseId: coursesList?.[0]?.id || "c1",
-        confidence: 0.94,
-        suggestedTitle: documentName || "Universal Design in Higher Ed Framework",
-        summary: "Explores inclusive pedagogical models and accommodations across higher education.",
-        extractedCitations: [
-          {
-            authors: "Burgstahler, S.",
-            year: "2021",
-            title: "Universal Design in Higher Education: Promising Practices",
-            source: "DO-IT, University of Washington",
-            doiOrUrl: "https://www.washington.edu/doit/resources/books/universal-design-higher-education",
-            apa7: "Burgstahler, S. (2021). Universal design in higher education: Promising practices. DO-IT, University of Washington.",
-            keyQuotes: [
-              "Universal design is an approach that values human diversity and designs environments to be accessible to everyone from the start."
-            ]
-          }
-        ],
-        tags: ["Universal Design", "Accessibility", "Pedagogy", "Accommodations"]
+        verified: false,
+        confidence: 0,
+        suggestedCourseId: coursesList?.[0]?.id || "",
+        suggestedTitle: documentName || "",
+        summary: "",
+        extractedCitations: [],
+        tags: [],
+        note: "Document intelligence requires a configured Gemini provider.",
       });
     }
 
@@ -738,50 +752,10 @@ app.post("/api/gemini/writing-coach", async (req, res) => {
     const ai = getGeminiClient();
 
     if (!ai) {
-      if (action === "deconstruct_prompt") {
-        return res.json({
-          result: {
-            coreQuestion: "How do institutional policies mediate transition barriers for neurodivergent students in graduate programs?",
-            keyRequirements: [
-              "Define transition barriers using at least 3 peer-reviewed sources.",
-              "Critique existing ADA Title II compliance models vs Universal Design.",
-              "Propose an actionable institutional accommodation framework.",
-              "Maintain strict APA 7 citation format."
-            ],
-            suggestedSections: [
-              { heading: "I. Introduction & Theoretical Lens", targetWordCount: 300, focus: "Frame neurodiversity and higher education retention." },
-              { heading: "II. Literature Review: Transition Barriers", targetWordCount: 750, focus: "Synthesize Wong (2020) and Evans et al. (2017)." },
-              { heading: "III. Critical Policy Analysis", targetWordCount: 650, focus: "Compare deficit-model accommodations with proactive UDL." },
-              { heading: "IV. Proposed Framework & Conclusion", targetWordCount: 500, focus: "Actionable recommendations for disability services." }
-            ],
-            estimatedHours: 4.5
-          }
-        });
-      }
-
-      if (action === "check_rubric") {
-        return res.json({
-          result: {
-            scoreEstimate: "92 / 100",
-            strengthPoints: [
-              "Strong integration of student voice and primary literature.",
-              "Logical progression from problem definition to policy critique."
-            ],
-            gapPoints: [
-              "Rubric Criterion 3 calls for specific mention of institutional budget impacts.",
-              "Ensure in-text citations for secondary data points in paragraph 4."
-            ],
-            rubricMatches: [
-              { criterion: "Depth of Analysis", status: "Exceeds Expectations", note: "Thorough synthesis of theoretical lenses." },
-              { criterion: "Scholarly Sources (min 5)", status: "Meets Expectations", note: "6 peer-reviewed citations detected." },
-              { criterion: "APA 7 Mechanics", status: "Minor Correction Needed", note: "Check et al. comma placement in paragraph 2." }
-            ]
-          }
-        });
-      }
-
       return res.json({
-        result: "Draft review complete. Authentic voice is preserved with clear scholarly rigor."
+        verified: false,
+        result: null,
+        note: "Writing coach is unavailable because Gemini is not configured.",
       });
     }
 
@@ -860,27 +834,10 @@ app.post("/api/gemini/voice-analysis", async (req, res) => {
 
     if (!ai) {
       return res.json({
-        voiceMatchScore: 88,
-        voiceAnalysis: {
-          tone: "Analytical and authentically empirical with strong personal engagement.",
-          cadence: "Varied sentence structures (14-26 words average), natural transitions.",
-          highlightedSentences: [
-            {
-              text: "Furthermore, it is pivotal to recognize that institutional paradigms significantly dictate student outcomes.",
-              status: "suspected_ai_drift",
-              reason: "Formulaic transition ('Furthermore, it is pivotal') and passive nominalization."
-            },
-            {
-              text: "When comparing the CUNY accommodation pipeline with UF's transition protocols, the administrative friction becomes evident.",
-              status: "authentic_voice",
-              reason: "Specific, contextualized argument with active scholarly voice."
-            }
-          ],
-          suggestions: [
-            "Replace generic transitions ('delve into', 'pivotal') with direct analytical verbs ('examines', 'demonstrates').",
-            "Keep the grounded first-hand analytical perspectives that characterize your prior essays."
-          ]
-        }
+        verified: false,
+        voiceMatchScore: null,
+        voiceAnalysis: null,
+        note: "Voice analysis is unavailable because Gemini is not configured.",
       });
     }
 
@@ -931,34 +888,11 @@ app.post("/api/gemini/academic-memory", async (req, res) => {
 
     if (!ai) {
       return res.json({
-        relevanceSummary: "Discovered 4 interconnected sources and 2 prior discussion reflections across CUNY SPS and University of Florida relevant to your Mississippi State assignment.",
-        connectedNodes: [
-          {
-            title: "Universal Design in Higher Education (Burgstahler)",
-            origin: "CUNY SPS — DSAB 629",
-            relationType: "Foundational Theory",
-            relevanceScore: 96,
-            snippet: "Proactive accommodation frameworks eliminate retrofitted stigma.",
-            citationApa: "Burgstahler, S. (2015). Universal Design in Higher Education. Harvard Education Press."
-          },
-          {
-            title: "Disability Identity & Student Voice Discussion Post",
-            origin: "CUNY SPS — DSAB 629 (Fall 2025)",
-            relationType: "Prior Student Work",
-            relevanceScore: 92,
-            snippet: "Synthesized Wong's anthology with institutional accommodation letters.",
-            citationApa: "Fishon, E. (2025). Student Agency and Access Protocols. CUNY SPS Archive."
-          },
-          {
-            title: "Youth Transition Barriers Field Notes",
-            origin: "University of Florida — FYC Project",
-            relationType: "Empirical Case Study",
-            relevanceScore: 87,
-            snippet: "Documented the handoff gaps between high school IEPs and university SAS offices.",
-            citationApa: "UF Research Collaborative (2025). Transition Barriers in Higher Ed."
-          }
-        ],
-        synthesisRecommendation: "Combine your CUNY theoretical foundation on Universal Design with the empirical barrier data from your UF research note to anchor your Mississippi State ED 9413 response."
+        verified: false,
+        relevanceSummary: "",
+        connectedNodes: [],
+        synthesisRecommendation: "",
+        note: "Academic memory search is unavailable because Gemini is not configured.",
       });
     }
 
@@ -1009,18 +943,11 @@ app.post("/api/gemini/companion-chat", async (req, res) => {
     const systemInstruction = roleSystemInstructions[role] || roleSystemInstructions.study_coach;
 
     if (!ai) {
-      const fallbackResponses: Record<string, string> = {
-        study_coach: "You have 3 items on deck today. Let's take the Mississippi State ED 9413 peer response first — it only takes about 20 minutes. Would you like to do a quick 20-minute focus session right now?",
-        research_librarian: "I found 3 relevant citations in your master vault on Universal Design and Transition Barriers from your CUNY SPS coursework that directly support your current paper.",
-        apa_coach: "For 3 or more authors in APA 7th edition, use '(Evans et al., 2017)' on the very first mention in-text. In the References list, list all authors up to 20.",
-        assignment_coach: "Looking at the ED 9413 prompt, Dr. Bennett is asking for a 350-word synthesis of peer-reviewed articles on Universal Design. You can easily ground this in the Burgstahler (2015) reading.",
-        access_coach: "Here is a clean draft email for Dr. Bennett requesting your documented 48-hour flexible assignment window for ED 9413 under your registered SAS accommodation.",
-        body_double: "I'm right here with you. Take a breath, pick the first paragraph, and let's write for 15 minutes. No perfectionism needed."
-      };
-
       return res.json({
-        reply: fallbackResponses[role] || fallbackResponses.study_coach,
-        role
+        verified: false,
+        reply:
+          "AI companion is unavailable because Gemini is not configured. Your saved coursework remains available.",
+        role,
       });
     }
 

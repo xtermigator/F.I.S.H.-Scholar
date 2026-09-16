@@ -31,9 +31,11 @@ const TYPE_LABELS: { value: QuickType; label: string }[] = [
 
 export const QuickAddButton: React.FC = () => {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   return (
     <>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen(true)}
         id="quick-add-btn"
@@ -42,7 +44,14 @@ export const QuickAddButton: React.FC = () => {
         <Plus className="h-5 w-5" aria-hidden="true" />
         <span className="hidden sm:inline">Quick Add</span>
       </button>
-      {open && <QuickAddModal onClose={() => setOpen(false)} />}
+      {open && (
+        <QuickAddModal
+          onClose={() => {
+            setOpen(false);
+            triggerRef.current?.focus();
+          }}
+        />
+      )}
     </>
   );
 };
@@ -71,6 +80,8 @@ const QuickAddModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           id: uid('asg'),
           courseId,
           title: t,
+          type: 'Other',
+          status: 'not_started',
           dueDate,
           dueTime: '',
           urgency: 'on_track',
@@ -159,6 +170,25 @@ const QuickAddModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4"
       onKeyDown={(e) => {
         if (e.key === 'Escape') onClose();
+        if (e.key === 'Tab') {
+          const container = dialogRef.current;
+          if (!container) return;
+          const focusables = (Array.from(
+            container.querySelectorAll<HTMLElement>(
+              'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+            ),
+          ) as HTMLElement[]).filter((el) => !el.hasAttribute('disabled'));
+          if (focusables.length === 0) return;
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
       }}
     >
       <div

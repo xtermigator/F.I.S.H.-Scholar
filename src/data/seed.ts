@@ -127,6 +127,8 @@ const assignments: (Assignment & EntityBase)[] = [
     ...base('asg-demo-1'),
     courseId: 'course-msu-ed9413',
     title: '(DEMO) Example assignment — edit or delete me',
+    type: 'Other',
+    status: 'not_started',
     dueDate: '',
     dueTime: '',
     urgency: 'on_track',

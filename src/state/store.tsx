@@ -57,6 +57,7 @@ export interface StoreActions {
 type StoreContextValue = StoreState & StoreActions;
 
 const StoreContext = createContext<StoreContextValue | null>(null);
+const INITIALIZED_MARKER_ID = '__store_initialized__';
 
 function nowIso() {
   return new Date().toISOString();
@@ -138,12 +139,20 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
     let cancelled = false;
     (async () => {
       try {
-        const existing = await repo.getAll('courses');
-        if (existing.length === 0) {
+        const marker = await repo.get('settings', INITIALIZED_MARKER_ID);
+        if (!marker) {
           const seed = buildDemoSeed();
           for (const [collection, entities] of Object.entries(seed)) {
             await repo.bulkPut(collection as Collection, entities as EntityBase[]);
           }
+          await repo.put('settings', {
+            id: INITIALIZED_MARKER_ID,
+            key: 'store_initialized',
+            value: 'true',
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+            isDemo: false,
+          } as Persistable);
         }
         if (!cancelled) await loadAll();
       } catch (e: any) {
@@ -201,8 +210,15 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
   );
 
   const clearDemo = useCallback(async () => {
-    await repo.clearDemo();
-    await loadAll();
+    try {
+      await repo.clearDemo();
+      await loadAll();
+    } catch (e: any) {
+      setState((s) => ({
+        ...s,
+        error: e?.message || 'Could not remove demo data. Your existing data is safe.',
+      }));
+    }
   }, [repo, loadAll]);
 
   const reseedDemo = useCallback(async () => {

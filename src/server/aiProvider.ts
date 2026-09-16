@@ -71,9 +71,9 @@ export function unavailableResult(provider: string): AIGenerateResult {
 export class GeminiAdapter implements AIProviderAdapter {
   readonly id = 'gemini';
   readonly label = 'Google Gemini';
-  private defaultModel: string;
+  private defaultModel?: string;
 
-  constructor(defaultModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash') {
+  constructor(defaultModel?: string) {
     this.defaultModel = defaultModel;
   }
 
@@ -90,7 +90,7 @@ export class GeminiAdapter implements AIProviderAdapter {
     // Lazy import so the server starts even if the SDK isn't installed.
     const { GoogleGenAI } = await import('@google/genai');
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-    const model = req.model || this.defaultModel;
+    const model = req.model || this.defaultModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
     const response = await ai.models.generateContent({
       model,
       contents: req.system ? `${req.system}\n\n${req.prompt}` : req.prompt,

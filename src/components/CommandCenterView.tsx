@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Sparkles,
   CalendarDays,
@@ -51,7 +51,12 @@ const WORKLOAD_STYLE: Record<WorkloadLevel, string> = {
 
 export const CommandCenterView: React.FC = () => {
   const store = useStore();
-  const now = useMemo(() => new Date(), []);
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const data: DashboardData = {
     assignments: store.assignments,

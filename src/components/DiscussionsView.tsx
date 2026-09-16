@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   MessagesSquare,
   Plus,
@@ -16,6 +16,7 @@ import type {
   Discussion,
   DiscussionResponse,
   OriginalPostStatus,
+  Assignment,
 } from '../types';
 
 /**
@@ -48,6 +49,7 @@ export const DiscussionsView: React.FC = () => {
 
   const [showNew, setShowNew] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const newDiscussionButtonRef = useRef<HTMLButtonElement>(null);
 
   const courseLabel = (courseId: string) => {
     const c = courses.find((x) => x.id === courseId);
@@ -72,6 +74,7 @@ export const DiscussionsView: React.FC = () => {
           </div>
         </div>
         <button
+          ref={newDiscussionButtonRef}
           type="button"
           onClick={() => setShowNew(true)}
           className="inline-flex items-center gap-1.5 rounded-lg bg-neutral-900 px-3 py-2 text-xs font-semibold text-white hover:bg-neutral-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500"
@@ -224,7 +227,12 @@ export const DiscussionsView: React.FC = () => {
       </ul>
 
       {showNew && (
-        <NewDiscussionModal onClose={() => setShowNew(false)} />
+        <NewDiscussionModal
+          onClose={() => {
+            setShowNew(false);
+            newDiscussionButtonRef.current?.focus();
+          }}
+        />
       )}
     </section>
   );
@@ -238,8 +246,37 @@ const ResponseManager: React.FC<{
   discussionId: string;
   responses: DiscussionResponse[];
 }> = ({ discussionId, responses }) => {
-  const { save, remove } = useStore();
+  const { save, remove, discussions } = useStore();
   const [name, setName] = useState('');
+  const discussion = discussions.find((d) => d.id === discussionId);
+
+  const createFollowUpTask = (response: DiscussionResponse) => {
+    if (response.followUpTaskId || !discussion) return;
+    const taskId = uid('followup');
+    const followUpTask: Assignment = {
+      id: taskId,
+      courseId: discussion.courseId,
+      title: `Follow up with ${response.classmateName} (${discussion.title})`,
+      type: 'Discussion',
+      status: 'not_started',
+      dueDate: discussion.responseDeadline || discussion.initialPostDeadline || '',
+      dueTime: '',
+      urgency: 'due_soon',
+      points: 0,
+      weight: '',
+      estimatedMinutes: 20,
+      prompt: `Follow up needed from discussion "${discussion.title}" with ${response.classmateName}.`,
+      rubric: '',
+      requiredReadings: [],
+      checklist: [],
+      drafts: [],
+      notes: '',
+      sourcesCited: [],
+      currentPhase: 'deconstruct',
+    };
+    save('assignments', followUpTask);
+    save('discussionResponses', { ...response, followUpTaskId: taskId });
+  };
 
   const addResponse = (direction: 'peer' | 'incoming') => {
     if (!name.trim()) return;
@@ -313,10 +350,26 @@ const ResponseManager: React.FC<{
                 <label className="inline-flex items-center gap-1.5 text-xs text-neutral-600">
                   <input
                     type="checkbox"
-                    checked={r.submitted}
+                    checked={r.drafted}
                     onChange={() =>
-                      save('discussionResponses', { ...r, submitted: !r.submitted })
+                      save('discussionResponses', { ...r, drafted: !r.drafted })
                     }
+                    className="rounded border-neutral-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+                  />
+                  Drafted
+                </label>
+                <label className="inline-flex items-center gap-1.5 text-xs text-neutral-600">
+                  <input
+                    type="checkbox"
+                    checked={r.submitted}
+                    onChange={() => {
+                      const nextSubmitted = !r.submitted;
+                      save('discussionResponses', {
+                        ...r,
+                        submitted: nextSubmitted,
+                        submittedAt: nextSubmitted ? new Date().toISOString() : undefined,
+                      });
+                    }}
                     className="rounded border-neutral-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
                   />
                   Submitted
@@ -335,6 +388,16 @@ const ResponseManager: React.FC<{
                   />
                   Follow-up
                 </label>
+                {r.followUpRequired && (
+                  <button
+                    type="button"
+                    onClick={() => createFollowUpTask(r)}
+                    disabled={!!r.followUpTaskId}
+                    className="rounded border border-neutral-300 bg-white px-2 py-1 text-[11px] font-medium text-neutral-700 hover:bg-neutral-100 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+                  >
+                    {r.followUpTaskId ? 'Task created' : 'Create follow-up task'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => remove('discussionResponses', r.id)}
@@ -363,6 +426,14 @@ const NewDiscussionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [minResponses, setMinResponses] = useState(2);
   const [week, setWeek] = useState<string>('');
   const [prompt, setPrompt] = useState('');
+  const [initialPostDeadline, setInitialPostDeadline] = useState('');
+  const [responseDeadline, setResponseDeadline] = useState('');
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    titleRef.current?.focus();
+  }, []);
 
   const canSave = title.trim().length > 0 && courseId;
 
@@ -377,6 +448,8 @@ const NewDiscussionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       minResponses: Math.max(0, minResponses),
       status: 'not_started',
       originalPost: { status: 'not_started' },
+      initialPostDeadline: initialPostDeadline || undefined,
+      responseDeadline: responseDeadline || undefined,
       createdAt: '',
       updatedAt: '',
     };
@@ -392,9 +465,28 @@ const NewDiscussionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       onKeyDown={(e) => {
         if (e.key === 'Escape') onClose();
+        if (e.key === 'Tab') {
+          const container = dialogRef.current;
+          if (!container) return;
+          const focusables = (Array.from(
+            container.querySelectorAll<HTMLElement>(
+              'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+            ),
+          ) as HTMLElement[]).filter((el) => !el.hasAttribute('disabled'));
+          if (focusables.length === 0) return;
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
       }}
     >
-      <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+      <div ref={dialogRef} className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 id="new-disc-title" className="font-serif text-base font-bold text-neutral-900">
             New discussion
@@ -434,9 +526,9 @@ const NewDiscussionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             </label>
             <input
               id="nd-title"
+              ref={titleRef}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              autoFocus
               className="mt-1 w-full rounded-md border border-neutral-200 px-2.5 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
             />
           </div>
@@ -467,6 +559,30 @@ const NewDiscussionModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 className="mt-1 w-full rounded-md border border-neutral-200 px-2.5 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
               />
             </div>
+          </div>
+          <div>
+            <label htmlFor="nd-initial-deadline" className="block text-xs font-medium text-neutral-600">
+              Initial post deadline (optional)
+            </label>
+            <input
+              id="nd-initial-deadline"
+              type="date"
+              value={initialPostDeadline}
+              onChange={(e) => setInitialPostDeadline(e.target.value)}
+              className="mt-1 w-full rounded-md border border-neutral-200 px-2.5 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+            />
+          </div>
+          <div>
+            <label htmlFor="nd-response-deadline" className="block text-xs font-medium text-neutral-600">
+              Peer response deadline (optional)
+            </label>
+            <input
+              id="nd-response-deadline"
+              type="date"
+              value={responseDeadline}
+              onChange={(e) => setResponseDeadline(e.target.value)}
+              className="mt-1 w-full rounded-md border border-neutral-200 px-2.5 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+            />
           </div>
           <div>
             <label htmlFor="nd-prompt" className="block text-xs font-medium text-neutral-600">
