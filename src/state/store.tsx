@@ -18,6 +18,7 @@ import type {
   Citation,
   Note,
   EntityBase,
+  Persistable,
   Collection,
 } from '../types';
 import { createRepository } from '../data/repository';
@@ -46,7 +47,7 @@ export interface StoreState {
 }
 
 export interface StoreActions {
-  save: <T extends EntityBase>(collection: Collection, entity: T) => Promise<void>;
+  save: <T extends Persistable>(collection: Collection, entity: T) => Promise<void>;
   remove: (collection: Collection, id: string) => Promise<void>;
   clearDemo: () => Promise<void>;
   reseedDemo: () => Promise<void>;
@@ -162,14 +163,9 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
 
   const save = useCallback<StoreActions['save']>(
     async (collection, entity) => {
-      const ts = nowIso();
-      const toSave = {
-        ...entity,
-        createdAt: entity.createdAt || ts,
-        updatedAt: ts,
-      };
       try {
-        const saved = await repo.put(collection, toSave);
+        // Repository stamps createdAt/updatedAt on write.
+        const saved = await repo.put(collection, entity);
         setState((s) => {
           const slice = collectionToSlice(collection);
           if (!slice) return s;

@@ -10,6 +10,11 @@ import { MeView } from './components/MeView';
 import { CompanionDrawer } from './components/CompanionDrawer';
 import { SyllabusModal } from './components/SyllabusModal';
 import { AuthorshipModal } from './components/AuthorshipModal';
+import { CommandCenterView } from './components/CommandCenterView';
+import { DiscussionsView } from './components/DiscussionsView';
+import { SettingsView } from './components/SettingsView';
+import { QuickAddButton } from './components/QuickAdd';
+import { StoreProvider } from './state/store';
 
 import {
   INITIAL_INSTITUTIONS,
@@ -32,9 +37,9 @@ import {
   AuthorshipDossier
 } from './types';
 
-export default function App() {
-  // Navigation
-  const [activeTab, setActiveTab] = useState<TabType>('TODAY');
+function AppShell() {
+  // Navigation — defaults to the store-backed Command Center (first-milestone experience).
+  const [activeTab, setActiveTab] = useState<TabType>('COMMAND');
 
   // Academic Knowledge Graph State
   const [institutions, setInstitutions] = useState<Institution[]>(INITIAL_INSTITUTIONS);
@@ -206,7 +211,13 @@ export default function App() {
       />
 
       {/* Main Content View Container */}
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-16">
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-24">
+        {activeTab === 'COMMAND' && <CommandCenterView />}
+
+        {activeTab === 'DISCUSS' && <DiscussionsView />}
+
+        {activeTab === 'SETTINGS' && <SettingsView />}
+
         {activeTab === 'TODAY' && (
           <TodayView
             institutions={institutions}
@@ -329,6 +340,17 @@ export default function App() {
         dossier={INITIAL_AUTHORSHIP_DOSSIER}
         citations={citations}
       />
+
+      {/* Universal Quick Add (persists through the store) */}
+      <QuickAddButton />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <StoreProvider>
+      <AppShell />
+    </StoreProvider>
   );
 }

@@ -1,4 +1,14 @@
-export type TabType = 'TODAY' | 'COURSES' | 'ASSIGNMENTS' | 'LIBRARY' | 'WRITE' | 'FOCUS' | 'ME';
+export type TabType =
+  | 'COMMAND'
+  | 'DISCUSS'
+  | 'TODAY'
+  | 'COURSES'
+  | 'ASSIGNMENTS'
+  | 'LIBRARY'
+  | 'WRITE'
+  | 'FOCUS'
+  | 'ME'
+  | 'SETTINGS';
 
 export interface Institution {
   id: string;
@@ -248,6 +258,18 @@ export interface EntityBase {
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   /** True for clearly-labeled sample data that can be removed in one action (R12). */
+  isDemo?: boolean;
+}
+
+/**
+ * Shape accepted when writing an entity. Timestamps are optional on input — the repository
+ * stamps `createdAt`/`updatedAt` on write — so legacy domain types (Assignment, Course, …)
+ * that predate EntityBase can be persisted without modification.
+ */
+export interface Persistable {
+  id: string;
+  createdAt?: string;
+  updatedAt?: string;
   isDemo?: boolean;
 }
 
@@ -530,8 +552,8 @@ export interface Snapshot {
 export interface Repository {
   getAll<T extends EntityBase>(collection: Collection): Promise<T[]>;
   get<T extends EntityBase>(collection: Collection, id: string): Promise<T | undefined>;
-  put<T extends EntityBase>(collection: Collection, entity: T): Promise<T>;
-  bulkPut<T extends EntityBase>(collection: Collection, entities: T[]): Promise<void>;
+  put<T extends Persistable>(collection: Collection, entity: T): Promise<T & EntityBase>;
+  bulkPut<T extends Persistable>(collection: Collection, entities: T[]): Promise<void>;
   remove(collection: Collection, id: string): Promise<void>;
   /** Remove every entity flagged isDemo across all collections (R12). */
   clearDemo(): Promise<void>;

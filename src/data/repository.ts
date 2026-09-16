@@ -1,6 +1,7 @@
 import type {
   Collection,
   EntityBase,
+  Persistable,
   Repository,
   Snapshot,
 } from '../types';
@@ -45,13 +46,14 @@ function nowIso(): string {
 }
 
 /** Ensure createdAt/updatedAt are set/refreshed on write. */
-function stamp<T extends EntityBase>(entity: T): T {
+function stamp<T extends Persistable>(entity: T): T & EntityBase {
   const ts = nowIso();
+  const existing = entity as Partial<EntityBase>;
   return {
     ...entity,
-    createdAt: entity.createdAt || ts,
+    createdAt: existing.createdAt || ts,
     updatedAt: ts,
-  };
+  } as T & EntityBase;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,13 +87,16 @@ export class InMemoryRepository implements Repository {
     return this.col(collection).get(id) as T | undefined;
   }
 
-  async put<T extends EntityBase>(collection: Collection, entity: T): Promise<T> {
+  async put<T extends Persistable>(
+    collection: Collection,
+    entity: T,
+  ): Promise<T & EntityBase> {
     const stamped = stamp(entity);
     this.col(collection).set(stamped.id, stamped);
     return stamped;
   }
 
-  async bulkPut<T extends EntityBase>(
+  async bulkPut<T extends Persistable>(
     collection: Collection,
     entities: T[],
   ): Promise<void> {
@@ -199,14 +204,17 @@ export class IndexedDbRepository implements Repository {
     return (await promisify(store.get(id))) as T | undefined;
   }
 
-  async put<T extends EntityBase>(collection: Collection, entity: T): Promise<T> {
+  async put<T extends Persistable>(
+    collection: Collection,
+    entity: T,
+  ): Promise<T & EntityBase> {
     const stamped = stamp(entity);
     const store = await this.tx(collection, 'readwrite');
     await promisify(store.put(stamped));
     return stamped;
   }
 
-  async bulkPut<T extends EntityBase>(
+  async bulkPut<T extends Persistable>(
     collection: Collection,
     entities: T[],
   ): Promise<void> {

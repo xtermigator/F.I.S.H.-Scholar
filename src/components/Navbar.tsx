@@ -12,6 +12,7 @@ import {
   Layers,
   GraduationCap
 } from 'lucide-react';
+import { MessagesSquare, Settings as SettingsIcon } from 'lucide-react';
 import { TabType, Institution } from '../types';
 
 interface NavbarProps {
@@ -34,13 +35,15 @@ export const Navbar: React.FC<NavbarProps> = ({
   onQuickFocus
 }) => {
   const tabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-    { id: 'TODAY', label: 'TODAY', icon: Sparkles },
+    { id: 'COMMAND', label: 'COMMAND', icon: Sparkles },
+    { id: 'DISCUSS', label: 'DISCUSS', icon: MessagesSquare },
     { id: 'COURSES', label: 'COURSES', icon: GraduationCap },
     { id: 'ASSIGNMENTS', label: 'ASSIGNMENTS', icon: CheckSquare },
     { id: 'LIBRARY', label: 'LIBRARY', icon: Library },
     { id: 'WRITE', label: 'WRITE', icon: Feather },
     { id: 'FOCUS', label: 'FOCUS', icon: Timer },
-    { id: 'ME', label: 'ME', icon: User }
+    { id: 'ME', label: 'ME', icon: User },
+    { id: 'SETTINGS', label: 'SETTINGS', icon: SettingsIcon }
   ];
 
   return (
