@@ -133,7 +133,7 @@ describe('store persistence integration', () => {
       sourcesCited: [],
       currentPhase: 'draft',
     } as Assignment);
-    const assignments = await repo.getAll<Assignment>('assignments');
+    const assignments = await repo.getAll<Assignment & EntityBase>('assignments');
     const items = dueToday(
       { assignments, discussions: [], discussionResponses: [], readings: [], assessments: [] },
       now,
