@@ -234,3 +234,307 @@ export interface CoachMessage {
     payload?: any;
   };
 }
+
+
+// ============================================================================
+// Academic Command Center — persisted entities (spec: academic-command-center)
+// Additive extension of the original prototype types above. See
+// .kiro/specs/academic-command-center/design.md and .kiro/steering/architecture.md.
+// ============================================================================
+
+/** Base fields carried by every persisted entity. */
+export interface EntityBase {
+  id: string;
+  createdAt: string; // ISO 8601
+  updatedAt: string; // ISO 8601
+  /** True for clearly-labeled sample data that can be removed in one action (R12). */
+  isDemo?: boolean;
+}
+
+/** IndexedDB object stores / logical collections. */
+export type Collection =
+  | 'institutions'
+  | 'courses'
+  | 'semesters'
+  | 'weekModules'
+  | 'assignments'
+  | 'discussions'
+  | 'discussionResponses'
+  | 'readings'
+  | 'assessments'
+  | 'citations'
+  | 'notes'
+  | 'calendarEvents'
+  | 'notifications'
+  | 'notionSyncRecords'
+  | 'settings';
+
+export interface Semester extends EntityBase {
+  institutionId?: string; // optional: a semester can be global to the student
+  name: string; // e.g. "Fall 2026"
+  term: 'Fall' | 'Spring' | 'Summer' | 'Winter' | 'Other';
+  year: number;
+  startDate?: string;
+  endDate?: string;
+}
+
+export type WeekModuleStatus =
+  | 'not_started'
+  | 'in_progress'
+  | 'completed'
+  | 'optional';
+
+export interface WeekModule extends EntityBase {
+  courseId: string;
+  index: number; // Week 1, 2, 3 ...
+  title?: string;
+  overview?: string;
+  objectives?: string[];
+  status: WeekModuleStatus;
+}
+
+/** Superset status usable across assignments and module items. */
+export type WorkStatus =
+  | 'not_started'
+  | 'in_progress'
+  | 'completed'
+  | 'submitted'
+  | 'graded'
+  | 'needs_revision'
+  | 'waiting'
+  | 'optional';
+
+export type AssignmentType =
+  | 'Paper'
+  | 'Reflection'
+  | 'Discussion'
+  | 'Presentation'
+  | 'Project'
+  | 'Research Paper'
+  | 'Quiz'
+  | 'Exam'
+  | 'Case Study'
+  | 'Literature Review'
+  | 'Group Project'
+  | 'Field Assignment'
+  | 'Other';
+
+// -------------------- Discussions (highest-priority feature, R4) --------------
+
+export type OriginalPostStatus =
+  | 'not_started'
+  | 'drafting'
+  | 'ready'
+  | 'submitted';
+
+export interface OriginalPost {
+  status: OriginalPostStatus;
+  draft?: string;
+  finalText?: string;
+  submittedAt?: string; // ISO 8601
+  wordCount?: number;
+  sourcesUsed?: string[]; // Citation IDs
+  lmsUrl?: string;
+}
+
+export type DiscussionStatus =
+  | 'not_started'
+  | 'in_progress'
+  | 'complete';
+
+export interface Discussion extends EntityBase {
+  courseId: string;
+  weekModuleId?: string;
+  week?: number;
+  title: string;
+  prompt?: string;
+  professorInstructions?: string;
+  initialPostDeadline?: string; // ISO 8601
+  responseDeadline?: string; // ISO 8601
+  wordCountRequirement?: number;
+  citationRequirement?: string;
+  /** Minimum number of peer responses required. */
+  minResponses: number;
+  status: DiscussionStatus;
+  originalPost: OriginalPost;
+  notes?: string;
+}
+
+export interface DiscussionResponse extends EntityBase {
+  discussionId: string;
+  /** 'peer' = a reply I owe/made to a classmate; 'incoming' = a classmate replied to me. */
+  direction?: 'peer' | 'incoming' | 'instructor';
+  classmateName: string;
+  classmatePostTopic?: string;
+  drafted: boolean;
+  submitted: boolean;
+  submittedAt?: string; // ISO 8601
+  wordCount?: number;
+  citationsUsed?: string[]; // Citation IDs
+  followUpRequired: boolean;
+  notes?: string;
+}
+
+/** Derived reply-progress summary for a discussion (computed, not stored). */
+export interface ReplyProgress {
+  required: number;
+  completed: number;
+  remaining: number;
+  followUps: number;
+  incomingUnanswered: number;
+}
+
+// -------------------- Assessments / readings / calendar / notifications -------
+
+export type AssessmentType = 'Quiz' | 'Test' | 'Exam' | 'Practical' | 'Other';
+
+export type StudyStatus =
+  | 'not_started'
+  | 'studying'
+  | 'ready'
+  | 'completed';
+
+export interface Assessment extends EntityBase {
+  courseId: string;
+  weekModuleId?: string;
+  name: string;
+  type: AssessmentType;
+  date?: string; // ISO 8601
+  time?: string;
+  coverage?: string[]; // chapters / modules covered
+  studyMaterials?: string[];
+  professorGuidance?: string;
+  studyStatus: StudyStatus;
+  score?: { earned: number; possible: number };
+  notes?: string;
+}
+
+export type ReadingStatus =
+  | 'not_started'
+  | 'reading'
+  | 'completed'
+  | 'review_again';
+
+export interface Reading extends EntityBase {
+  courseId: string;
+  weekModuleId?: string;
+  assignmentId?: string;
+  title: string;
+  author?: string;
+  publication?: string;
+  year?: string;
+  doi?: string;
+  url?: string;
+  required: boolean;
+  status: ReadingStatus;
+  pages?: string;
+  notes?: string;
+  quotations?: string[];
+  concepts?: string[];
+  apaCitation?: string;
+  /** Whether citation metadata is verified. Never silently set true (academic-integrity). */
+  verified?: boolean;
+}
+
+export type CalendarEventKind =
+  | 'assignment'
+  | 'discussion_post'
+  | 'discussion_response'
+  | 'test'
+  | 'quiz'
+  | 'presentation'
+  | 'deadline'
+  | 'meeting'
+  | 'other';
+
+export interface CalendarEvent extends EntityBase {
+  courseId?: string;
+  kind: CalendarEventKind;
+  title: string;
+  date: string; // ISO 8601
+  time?: string;
+  /** Links back to the entity that generated this event, if any. */
+  sourceEntityId?: string;
+}
+
+export interface Note extends EntityBase {
+  courseId?: string;
+  weekModuleId?: string;
+  assignmentId?: string;
+  title?: string;
+  body: string;
+  tags?: string[];
+  /** Parking-lot notes are captured without scheduling (executive-function support). */
+  parkingLot?: boolean;
+}
+
+export interface Notification extends EntityBase {
+  ruleId?: string;
+  entityId: string;
+  message: string;
+  dueOffsetDays?: number;
+  read: boolean;
+}
+
+// -------------------- AI provider abstraction (R8) ---------------------------
+
+export type AIProviderKind =
+  | 'gemini'
+  | 'anime_ai'
+  | 'openai_compatible'
+  | 'anthropic_compatible'
+  | 'bedrock'
+  | 'local';
+
+/**
+ * Client-visible provider metadata only. Keys and endpoints live server-side and are
+ * NEVER included here (security steering).
+ */
+export interface AIProvider extends EntityBase {
+  provider: AIProviderKind;
+  label: string;
+  model?: string;
+  enabledFeatures: string[];
+  /** Whether the server reports this provider as configured/usable. */
+  configured: boolean;
+}
+
+// -------------------- Notion sync bookkeeping (R7) ---------------------------
+
+export type SyncDirection = 'import' | 'export' | 'two_way';
+export type ConflictStatus = 'none' | 'conflict' | 'resolved_local' | 'resolved_remote';
+
+export interface NotionSyncRecord extends EntityBase {
+  externalId: string; // Notion page/row id (stable dedupe key)
+  localEntityId?: string;
+  collection: Collection;
+  source: 'notion';
+  lastSyncedAt?: string;
+  syncDirection: SyncDirection;
+  conflictStatus: ConflictStatus;
+}
+
+// -------------------- Persistence contracts ----------------------------------
+
+export interface Snapshot {
+  schemaVersion: number;
+  exportedAt: string;
+  collections: Partial<Record<Collection, EntityBase[]>>;
+}
+
+/**
+ * The single boundary through which the app reads/writes durable data.
+ * Implementations: IndexedDbRepository (now), ApiRepository (future backend).
+ * See design.md §3.
+ */
+export interface Repository {
+  getAll<T extends EntityBase>(collection: Collection): Promise<T[]>;
+  get<T extends EntityBase>(collection: Collection, id: string): Promise<T | undefined>;
+  put<T extends EntityBase>(collection: Collection, entity: T): Promise<T>;
+  bulkPut<T extends EntityBase>(collection: Collection, entities: T[]): Promise<void>;
+  remove(collection: Collection, id: string): Promise<void>;
+  /** Remove every entity flagged isDemo across all collections (R12). */
+  clearDemo(): Promise<void>;
+  exportAll(): Promise<Snapshot>;
+  importAll(snapshot: Snapshot): Promise<void>;
+}
