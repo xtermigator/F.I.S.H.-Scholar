@@ -17,6 +17,7 @@ import type {
   Assessment,
   Citation,
   Note,
+  NotionSyncRecord,
   EntityBase,
   Persistable,
   Collection,
@@ -44,6 +45,7 @@ export interface StoreState {
   assessments: Assessment[];
   citations: Citation[];
   notes: Note[];
+  notionSyncRecords: NotionSyncRecord[];
 }
 
 export interface StoreActions {
@@ -74,6 +76,7 @@ const SLICE_TO_COLLECTION: Record<string, Collection> = {
   assessments: 'assessments',
   citations: 'citations',
   notes: 'notes',
+  notionSyncRecords: 'notionSyncRecords',
 };
 
 export const StoreProvider: React.FC<{ repository?: Repository; children: React.ReactNode }> = ({
@@ -94,6 +97,7 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
     assessments: [],
     citations: [],
     notes: [],
+    notionSyncRecords: [],
   });
 
   const loadAll = useCallback(async () => {
@@ -107,6 +111,7 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
       assessments,
       citations,
       notes,
+      notionSyncRecords,
     ] = await Promise.all([
       repo.getAll<Institution & EntityBase>('institutions'),
       repo.getAll<Course & EntityBase>('courses'),
@@ -117,6 +122,7 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
       repo.getAll<Assessment>('assessments'),
       repo.getAll<Citation & EntityBase>('citations'),
       repo.getAll<Note>('notes'),
+      repo.getAll<NotionSyncRecord>('notionSyncRecords'),
     ]);
     setState((s) => ({
       ...s,
@@ -131,6 +137,7 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
       assessments,
       citations,
       notes,
+      notionSyncRecords,
     }));
   }, [repo]);
 

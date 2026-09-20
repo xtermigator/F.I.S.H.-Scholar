@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Trash2, Download, RefreshCw, ShieldCheck, Info } from 'lucide-react';
 import { useStore } from '../state/store';
+import { NotionPanel } from './NotionPanel';
 
 /**
  * Settings: demo-data removal (R12), data export (R1/R12), and status notes. Kept intentionally
@@ -102,6 +103,8 @@ export const SettingsView: React.FC = () => {
           <Download className="h-4 w-4" aria-hidden="true" /> Export JSON
         </button>
       </div>
+
+      <NotionPanel />
 
       <div className="rounded-2xl border border-neutral-200 bg-white p-4">
         <h2 className="flex items-center gap-2 font-semibold text-neutral-900">

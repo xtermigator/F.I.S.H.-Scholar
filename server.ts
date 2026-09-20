@@ -9,6 +9,12 @@ import {
   generate as aiGenerate,
   getActiveProvider,
 } from "./src/server/aiProvider";
+import {
+  isNotionConfigured,
+  checkConnection as notionCheckConnection,
+  listDatabases as notionListDatabases,
+  previewDatabase as notionPreviewDatabase,
+} from "./src/server/notion";
 
 dotenv.config();
 
@@ -102,6 +108,44 @@ app.post("/api/ai/generate", aiGenerateAuth, aiGenerateRateLimit, async (req, re
   }
   const result = await aiGenerate({ system, prompt, model, json: !!json });
   res.json(result);
+});
+
+// ---------------------------------------------------------------------------
+// Notion integration (READ-ONLY). Key is server-side only; never returned to client.
+// Flow: status -> databases -> preview (schema + pages) -> [client maps & confirms] -> import
+// is performed client-side into local storage (we never write back to Notion here).
+// ---------------------------------------------------------------------------
+
+// Connection status (does NOT expose the key).
+app.get("/api/notion/status", async (_req, res) => {
+  if (!isNotionConfigured()) {
+    return res.json({ configured: false, connected: false });
+  }
+  const result = await notionCheckConnection();
+  if (result.ok) {
+    return res.json({ configured: true, connected: true });
+  }
+  res.json({ configured: true, connected: false, error: result.error });
+});
+
+// List databases shared with the integration.
+app.get("/api/notion/databases", async (_req, res) => {
+  const result = await notionListDatabases();
+  if (result.ok) {
+    return res.json({ databases: result.data });
+  }
+  res.status(result.unconfigured ? 400 : 502).json({ error: result.error });
+});
+
+// Preview a database (schema + normalized pages) for the mapping UI.
+app.get("/api/notion/databases/:id/preview", async (req, res) => {
+  const { id } = req.params;
+  const pageSize = Number(req.query.pageSize) || 25;
+  const result = await notionPreviewDatabase(id, pageSize);
+  if (result.ok) {
+    return res.json(result.data);
+  }
+  res.status(result.unconfigured ? 400 : 502).json({ error: result.error });
 });
 
 // 2. Syllabus Intelligence Extractor
