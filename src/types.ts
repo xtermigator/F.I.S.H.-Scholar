@@ -3,6 +3,7 @@ export type TabType =
   | 'ASK'
   | 'SEARCH'
   | 'DISCUSS'
+  | 'CALENDAR'
   | 'TODAY'
   | 'COURSES'
   | 'ASSIGNMENTS'
