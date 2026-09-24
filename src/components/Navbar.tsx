@@ -12,7 +12,7 @@ import {
   Layers,
   GraduationCap
 } from 'lucide-react';
-import { MessagesSquare, Settings as SettingsIcon } from 'lucide-react';
+import { MessagesSquare, Search as SearchIcon, Settings as SettingsIcon } from 'lucide-react';
 import { TabType, Institution } from '../types';
 
 interface NavbarProps {
@@ -37,6 +37,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const tabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'COMMAND', label: 'COMMAND', icon: Sparkles },
     { id: 'ASK', label: 'ASK FISH', icon: MessageSquareQuote },
+    { id: 'SEARCH', label: 'SEARCH', icon: SearchIcon },
     { id: 'DISCUSS', label: 'DISCUSS', icon: MessagesSquare },
     { id: 'COURSES', label: 'COURSES', icon: GraduationCap },
     { id: 'ASSIGNMENTS', label: 'ASSIGNMENTS', icon: CheckSquare },

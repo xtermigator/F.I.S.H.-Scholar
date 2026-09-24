@@ -12,6 +12,7 @@ import { SyllabusModal } from './components/SyllabusModal';
 import { AuthorshipModal } from './components/AuthorshipModal';
 import { CommandCenterView } from './components/CommandCenterView';
 import { AskFishView } from './components/AskFishView';
+import { SearchView } from './components/SearchView';
 import { DiscussionsView } from './components/DiscussionsView';
 import { SettingsView } from './components/SettingsView';
 import { QuickAddButton } from './components/QuickAdd';
@@ -220,6 +221,8 @@ function AppShell() {
         {activeTab === 'COMMAND' && <CommandCenterView />}
 
         {activeTab === 'ASK' && <AskFishView />}
+
+        {activeTab === 'SEARCH' && <SearchView onNavigate={setActiveTab} />}
 
         {activeTab === 'DISCUSS' && <DiscussionsView />}
 

@@ -8,6 +8,10 @@ import {
   BookOpen,
   ClipboardList,
   GraduationCap,
+  Bell,
+  AlertTriangle,
+  Info,
+  X,
 } from 'lucide-react';
 import { useStore } from '../state/store';
 import {
@@ -19,6 +23,7 @@ import {
   type DueItem,
   type WorkloadLevel,
 } from '../state/selectors';
+import { buildNotifications, type Alert, type AlertSeverity } from '../state/notifications';
 
 /**
  * Command Center dashboard: Today, This Week, per-course workload, and a single "Start Here"
@@ -70,6 +75,15 @@ export const CommandCenterView: React.FC = () => {
   const week = dueThisWeek(data, now);
   const next = recommendedNextAction(data, now);
 
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+  const alerts = buildNotifications(data, now).filter((a) => !dismissed.has(a.id));
+  const dismissAlert = (id: string) =>
+    setDismissed((prev) => {
+      const nextSet = new Set(prev);
+      nextSet.add(id);
+      return nextSet;
+    });
+
   const courseLabel = (courseId?: string) => {
     if (!courseId) return 'General';
     const c = store.courses.find((x) => x.id === courseId);
@@ -105,6 +119,24 @@ export const CommandCenterView: React.FC = () => {
               {courseLabel(next.item.courseId)}
             </span>
           </div>
+        </div>
+      )}
+
+      {/* Reminders / notifications */}
+      {alerts.length > 0 && (
+        <div className="rounded-2xl border border-neutral-200 bg-white p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Bell className="h-4 w-4 text-neutral-500" aria-hidden="true" />
+            <h2 className="font-semibold text-neutral-900">Reminders</h2>
+            <span className="ml-auto rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600">
+              {alerts.length}
+            </span>
+          </div>
+          <ul className="space-y-2">
+            {alerts.slice(0, 8).map((a) => (
+              <AlertRow key={a.id} alert={a} courseLabel={courseLabel} onDismiss={dismissAlert} />
+            ))}
+          </ul>
         </div>
       )}
 
@@ -210,5 +242,53 @@ const DueList: React.FC<{
         );
       })}
     </ul>
+  );
+};
+
+
+// Severity styling — conveyed with icon + text label, never color alone (accessibility steering).
+const SEVERITY_ICON: Record<AlertSeverity, React.ComponentType<{ className?: string }>> = {
+  critical: AlertTriangle,
+  warning: AlertCircle,
+  info: Info,
+};
+
+const SEVERITY_LABEL: Record<AlertSeverity, string> = {
+  critical: 'Urgent',
+  warning: 'Soon',
+  info: 'Heads-up',
+};
+
+const SEVERITY_ICON_STYLE: Record<AlertSeverity, string> = {
+  critical: 'text-red-600',
+  warning: 'text-amber-600',
+  info: 'text-sky-600',
+};
+
+const AlertRow: React.FC<{
+  alert: Alert;
+  courseLabel: (id?: string) => string;
+  onDismiss: (id: string) => void;
+}> = ({ alert, courseLabel, onDismiss }) => {
+  const Icon = SEVERITY_ICON[alert.severity];
+  return (
+    <li className="flex items-start gap-3 rounded-lg border border-neutral-100 bg-neutral-50/60 px-3 py-2">
+      <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${SEVERITY_ICON_STYLE[alert.severity]}`} aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-neutral-800">{alert.message}</p>
+        <p className="text-[11px] text-neutral-500">
+          {SEVERITY_LABEL[alert.severity]}
+          {alert.courseId ? ` · ${courseLabel(alert.courseId)}` : ''}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => onDismiss(alert.id)}
+        aria-label="Dismiss reminder"
+        className="rounded p-1 text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+      >
+        <X className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+    </li>
   );
 };
