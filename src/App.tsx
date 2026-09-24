@@ -15,6 +15,7 @@ import { AskFishView } from './components/AskFishView';
 import { SearchView } from './components/SearchView';
 import { ReportsView } from './components/ReportsView';
 import { CalendarView } from './components/CalendarView';
+import { StudyView } from './components/StudyView';
 import { DiscussionsView } from './components/DiscussionsView';
 import { SettingsView } from './components/SettingsView';
 import { QuickAddButton } from './components/QuickAdd';
@@ -227,6 +228,8 @@ function AppShell() {
         {activeTab === 'SEARCH' && <SearchView onNavigate={setActiveTab} />}
 
         {activeTab === 'CALENDAR' && <CalendarView />}
+
+        {activeTab === 'STUDY' && <StudyView />}
 
         {activeTab === 'DISCUSS' && <DiscussionsView />}
 

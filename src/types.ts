@@ -4,6 +4,7 @@ export type TabType =
   | 'SEARCH'
   | 'DISCUSS'
   | 'CALENDAR'
+  | 'STUDY'
   | 'TODAY'
   | 'COURSES'
   | 'ASSIGNMENTS'
