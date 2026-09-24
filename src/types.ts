@@ -10,6 +10,7 @@ export type TabType =
   | 'WRITE'
   | 'FOCUS'
   | 'ME'
+  | 'REPORTS'
   | 'SETTINGS';
 
 export interface Institution {
@@ -102,6 +103,16 @@ export interface Assignment {
   sourcesCited: string[]; // Citation IDs
   currentPhase: 'deconstruct' | 'outline' | 'sources' | 'draft' | 'review' | 'authorship';
   professorFeedback?: string;
+  /**
+   * Manually-entered grade for this assignment (never inferred). `pointsEarned` out of
+   * `pointsPossible`; optional `weightPercent` for weighted courses. Presence of this object
+   * means a real grade was recorded (academic-integrity steering).
+   */
+  grade?: {
+    pointsEarned: number;
+    pointsPossible: number;
+    weightPercent?: number;
+  };
 }
 
 export interface CourseAlignment {

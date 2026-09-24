@@ -12,7 +12,7 @@ import {
   Layers,
   GraduationCap
 } from 'lucide-react';
-import { MessagesSquare, Search as SearchIcon, Settings as SettingsIcon } from 'lucide-react';
+import { MessagesSquare, Search as SearchIcon, FileText, Settings as SettingsIcon } from 'lucide-react';
 import { TabType, Institution } from '../types';
 
 interface NavbarProps {
@@ -45,6 +45,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'WRITE', label: 'WRITE', icon: Feather },
     { id: 'FOCUS', label: 'FOCUS', icon: Timer },
     { id: 'ME', label: 'ME', icon: User },
+    { id: 'REPORTS', label: 'REPORTS', icon: FileText },
     { id: 'SETTINGS', label: 'SETTINGS', icon: SettingsIcon }
   ];
 

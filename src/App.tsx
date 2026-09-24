@@ -13,6 +13,7 @@ import { AuthorshipModal } from './components/AuthorshipModal';
 import { CommandCenterView } from './components/CommandCenterView';
 import { AskFishView } from './components/AskFishView';
 import { SearchView } from './components/SearchView';
+import { ReportsView } from './components/ReportsView';
 import { DiscussionsView } from './components/DiscussionsView';
 import { SettingsView } from './components/SettingsView';
 import { QuickAddButton } from './components/QuickAdd';
@@ -225,6 +226,8 @@ function AppShell() {
         {activeTab === 'SEARCH' && <SearchView onNavigate={setActiveTab} />}
 
         {activeTab === 'DISCUSS' && <DiscussionsView />}
+
+        {activeTab === 'REPORTS' && <ReportsView />}
 
         {activeTab === 'SETTINGS' && <SettingsView />}
 
