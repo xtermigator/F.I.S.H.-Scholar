@@ -11,6 +11,7 @@ import { CompanionDrawer } from './components/CompanionDrawer';
 import { SyllabusModal } from './components/SyllabusModal';
 import { AuthorshipModal } from './components/AuthorshipModal';
 import { CommandCenterView } from './components/CommandCenterView';
+import { AskFishView } from './components/AskFishView';
 import { DiscussionsView } from './components/DiscussionsView';
 import { SettingsView } from './components/SettingsView';
 import { QuickAddButton } from './components/QuickAdd';
@@ -217,6 +218,8 @@ function AppShell() {
       {/* Main Content View Container */}
       <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-24">
         {activeTab === 'COMMAND' && <CommandCenterView />}
+
+        {activeTab === 'ASK' && <AskFishView />}
 
         {activeTab === 'DISCUSS' && <DiscussionsView />}
 

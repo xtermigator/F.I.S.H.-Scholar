@@ -36,6 +36,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const tabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'COMMAND', label: 'COMMAND', icon: Sparkles },
+    { id: 'ASK', label: 'ASK FISH', icon: MessageSquareQuote },
     { id: 'DISCUSS', label: 'DISCUSS', icon: MessagesSquare },
     { id: 'COURSES', label: 'COURSES', icon: GraduationCap },
     { id: 'ASSIGNMENTS', label: 'ASSIGNMENTS', icon: CheckSquare },

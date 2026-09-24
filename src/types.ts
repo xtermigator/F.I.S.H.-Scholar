@@ -1,5 +1,6 @@
 export type TabType =
   | 'COMMAND'
+  | 'ASK'
   | 'DISCUSS'
   | 'TODAY'
   | 'COURSES'
