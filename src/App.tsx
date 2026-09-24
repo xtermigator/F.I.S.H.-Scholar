@@ -220,7 +220,7 @@ function AppShell() {
       />
 
       {/* Main Content View Container */}
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-24">
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-28 md:pb-24">
         {activeTab === 'COMMAND' && <CommandCenterView />}
 
         {activeTab === 'ASK' && <AskFishView />}

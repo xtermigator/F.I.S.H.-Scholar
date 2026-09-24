@@ -39,7 +39,7 @@ export const QuickAddButton: React.FC = () => {
         type="button"
         onClick={() => setOpen(true)}
         id="quick-add-btn"
-        className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-amber-500 px-4 py-3 text-sm font-bold text-neutral-950 shadow-lg hover:bg-amber-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-900"
+        className="fixed bottom-20 right-5 z-40 inline-flex items-center gap-2 rounded-full bg-amber-500 px-4 py-3 text-sm font-bold text-neutral-950 shadow-lg hover:bg-amber-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-900 md:bottom-5"
       >
         <Plus className="h-5 w-5" aria-hidden="true" />
         <span className="hidden sm:inline">Quick Add</span>
