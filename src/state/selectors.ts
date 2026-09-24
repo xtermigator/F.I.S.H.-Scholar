@@ -49,8 +49,17 @@ export function parseDueDate(value: string | undefined, now: Date): Date | null 
     return new Date(Number(y), Number(m) - 1, Number(d));
   }
 
-  const iso = Date.parse(trimmed);
-  if (!Number.isNaN(iso)) return new Date(iso);
+  // Only fall back to the lenient native parser when the string actually looks like a date
+  // (a month name or a numeric date pattern). This prevents free text such as
+  // "end of week 3" from being silently coerced into a bogus date (academic-integrity).
+  const looksDateLike =
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i.test(trimmed) ||
+    /\d{1,2}[\/.\-]\d{1,2}([\/.\-]\d{2,4})?/.test(trimmed) ||
+    /\d{4}-\d{2}-\d{2}t/i.test(trimmed); // ISO datetime
+  if (looksDateLike) {
+    const iso = Date.parse(trimmed);
+    if (!Number.isNaN(iso)) return new Date(iso);
+  }
 
   return null;
 }
