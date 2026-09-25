@@ -12,6 +12,7 @@ import { SyllabusModal } from './components/SyllabusModal';
 import { AuthorshipModal } from './components/AuthorshipModal';
 import { CommandCenterView } from './components/CommandCenterView';
 import { AskFishView } from './components/AskFishView';
+import { TalkView } from './components/TalkView';
 import { SearchView } from './components/SearchView';
 import { ReportsView } from './components/ReportsView';
 import { CalendarView } from './components/CalendarView';
@@ -224,6 +225,8 @@ function AppShell() {
         {activeTab === 'COMMAND' && <CommandCenterView />}
 
         {activeTab === 'ASK' && <AskFishView />}
+
+        {activeTab === 'TALK' && <TalkView />}
 
         {activeTab === 'SEARCH' && <SearchView onNavigate={setActiveTab} />}
 

@@ -14,6 +14,7 @@ import {
   FileText,
   CalendarDays,
   Brain,
+  Video,
   Menu,
   X,
   Settings as SettingsIcon,
@@ -39,6 +40,7 @@ interface TabDef {
 const TABS: TabDef[] = [
   { id: 'COMMAND', label: 'COMMAND', icon: Sparkles },
   { id: 'ASK', label: 'ASK FISH', icon: MessageSquareQuote },
+  { id: 'TALK', label: 'TALK', icon: Video },
   { id: 'SEARCH', label: 'SEARCH', icon: SearchIcon },
   { id: 'DISCUSS', label: 'DISCUSS', icon: MessagesSquare },
   { id: 'CALENDAR', label: 'CALENDAR', icon: CalendarDays },

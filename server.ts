@@ -15,6 +15,12 @@ import {
   listDatabases as notionListDatabases,
   previewDatabase as notionPreviewDatabase,
 } from "./src/server/notion";
+import {
+  isAnamConfigured,
+  ephemeralConfigIncomplete as anamConfigIncomplete,
+  createSessionToken as anamCreateSessionToken,
+} from "./src/server/anam";
+import { composeGroundedMessages, type ChatMessage, type GroundingInputs } from "./src/state/chatGrounding";
 
 dotenv.config();
 
@@ -146,6 +152,99 @@ app.get("/api/notion/databases/:id/preview", async (req, res) => {
     return res.json(result.data);
   }
   res.status(result.unconfigured ? 400 : 502).json({ error: result.error });
+});
+
+// ---------------------------------------------------------------------------
+// anam.ai avatar ("Talk to FISH"). API key stays server-side; the client only
+// receives a short-lived session token. The custom-LLM bridge grounds every reply
+// in the student's own knowledge base before the brain LLM answers.
+// ---------------------------------------------------------------------------
+
+// Avatar availability (never exposes the key).
+app.get("/api/anam/status", (_req, res) => {
+  res.json({
+    configured: isAnamConfigured(),
+    // True when the key is set but avatar/voice/llm (or a personaId) are still missing.
+    needsPersonaConfig: isAnamConfigured() && anamConfigIncomplete(),
+  });
+});
+
+// Mint a short-lived anam session token for the browser SDK.
+app.post("/api/anam/session-token", async (req, res) => {
+  const clientLabel = (req.body && req.body.clientLabel) || "fish-scholar";
+  const result = await anamCreateSessionToken(clientLabel);
+  if (result.ok) {
+    return res.json(result.data);
+  }
+  res.status(result.unconfigured ? 400 : 502).json({ error: result.error });
+});
+
+/**
+ * Custom-LLM bridge for anam (OpenAI-compatible, streaming SSE).
+ *
+ * anam (or the browser client) POSTs an OpenAI-style chat payload; we ground the latest turn
+ * in the student's knowledge base (grounding facts + records are supplied by the client in
+ * `groundingInputs`, since course data lives in the browser store), then call the configured
+ * brain provider and stream the answer back as `chat.completion.chunk` events. Ends with a
+ * `finish_reason: "stop"` chunk and `[DONE]`, per the anam custom-LLM spec.
+ */
+app.post("/api/anam/llm", async (req, res) => {
+  const messages: ChatMessage[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const groundingInputs: GroundingInputs | undefined = req.body?.groundingInputs;
+
+  // OpenAI-compatible SSE headers.
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+
+  const id = `chatcmpl-fish-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  const sendChunk = (delta: Record<string, unknown>, finish: string | null = null) => {
+    const payload = {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model: "fish-grounded",
+      choices: [{ index: 0, delta, finish_reason: finish }],
+    };
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  try {
+    let text: string;
+    if (groundingInputs) {
+      // Reconstruct Date on the server (JSON serialization drops the type).
+      const inputs: GroundingInputs = {
+        ...groundingInputs,
+        askCtx: { ...groundingInputs.askCtx, now: new Date(groundingInputs.askCtx.now as unknown as string) },
+      };
+      const grounded = composeGroundedMessages(messages, inputs);
+      const system = grounded.find((m) => m.role === "system")?.content || "";
+      const convo = grounded
+        .filter((m) => m.role !== "system")
+        .map((m) => `${m.role === "user" ? "Student" : "FISH"}: ${m.content}`)
+        .join("\n");
+      const result = await aiGenerate({ system, prompt: convo });
+      text = result.verified
+        ? result.text
+        : "I can answer from your F.I.S.H. Scholar data, but the AI voice model isn't configured yet. " +
+          (result.note || "");
+    } else {
+      text = "I didn't receive your academic context, so I can't ground an answer right now.";
+    }
+
+    sendChunk({ role: "assistant" });
+    if (text) sendChunk({ content: text });
+    sendChunk({}, "stop");
+    res.write("data: [DONE]\n\n");
+    res.end();
+  } catch (err: any) {
+    sendChunk({ role: "assistant" });
+    sendChunk({ content: "AI assistance is temporarily unavailable. Your academic records remain accessible." });
+    sendChunk({}, "stop");
+    res.write("data: [DONE]\n\n");
+    res.end();
+  }
 });
 
 // 2. Syllabus Intelligence Extractor
