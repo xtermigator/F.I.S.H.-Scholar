@@ -27,7 +27,8 @@ import { getKeyStatus, setKey } from "./src/server/keyStore";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+// Hosts like Render/Railway inject the port to bind via process.env.PORT; fall back to 3000 locally.
+const PORT = Number(process.env.PORT) || 3000;
 
 // Configurable Gemini model. Defaults to a real, current model family; override with
 // GEMINI_MODEL. (The previous hard-coded "gemini-3.7-flash" was not a valid model name.)

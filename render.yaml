@@ -1,0 +1,53 @@
+# Render blueprint for F.I.S.H. Scholar.
+# In Render: New + → "Blueprint" → connect this repo → it reads this file.
+# (Or create a Web Service manually with the same build/start commands below.)
+#
+# Secrets are entered in the Render dashboard (sync: false = "set it in the UI, keep it
+# private"). They are NEVER committed to git. You can also set/update most of them later from
+# the in-app Settings → "API keys & integrations" panel, but on Render the app's filesystem is
+# ephemeral, so dashboard env vars are the durable source of truth — prefer setting them here.
+services:
+  - type: web
+    name: fish-scholar
+    runtime: node
+    plan: free
+    # Build the client (Vite) and bundle the server (esbuild → dist/server.cjs).
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT automatically; the server binds to it.
+
+      # --- AI brain (optional; text chat works without it) ---
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+
+      # --- anam.ai avatar (optional) ---
+      - key: ANAM_API_KEY
+        sync: false
+      - key: ANAM_PERSONA_ID
+        sync: false
+      - key: ANAM_AVATAR_ID
+        sync: false
+      - key: ANAM_VOICE_ID
+        sync: false
+      - key: ANAM_LLM_ID
+        sync: false
+
+      # --- Notion (optional) ---
+      - key: NOTION_API_KEY
+        sync: false
+
+      # --- App URL: set to the deployed Render URL after first deploy so anam/OAuth
+      #     callbacks resolve (e.g. https://fish-scholar.onrender.com) ---
+      - key: APP_URL
+        sync: false
