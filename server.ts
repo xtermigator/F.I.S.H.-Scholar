@@ -21,6 +21,8 @@ import {
   createSessionToken as anamCreateSessionToken,
 } from "./src/server/anam";
 import { composeGroundedMessages, type ChatMessage, type GroundingInputs } from "./src/state/chatGrounding";
+import { answerQuestion } from "./src/state/askFish";
+import { getKeyStatus, setKey } from "./src/server/keyStore";
 
 dotenv.config();
 
@@ -245,6 +247,74 @@ app.post("/api/anam/llm", async (req, res) => {
     res.write("data: [DONE]\n\n");
     res.end();
   }
+});
+
+/**
+ * Text-chat companion (non-streaming JSON). Same grounding as the anam SSE bridge, but returns
+ * a single { reply, verified, note } — used by the "Talk to FISH" text fallback so grounded
+ * chat works even before the avatar/custom-LLM is configured. With no AI key, it falls back to
+ * the deterministic Ask FISH answer, so it still works with zero keys (never fabricates).
+ */
+app.post("/api/anam/chat", async (req, res) => {
+  const messages: ChatMessage[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const groundingInputs: GroundingInputs | undefined = req.body?.groundingInputs;
+  if (!groundingInputs) {
+    return res.status(400).json({ error: "Missing academic context." });
+  }
+  try {
+    const inputs: GroundingInputs = {
+      ...groundingInputs,
+      askCtx: { ...groundingInputs.askCtx, now: new Date(groundingInputs.askCtx.now as unknown as string) },
+    };
+    const grounded = composeGroundedMessages(messages, inputs);
+    const system = grounded.find((m) => m.role === "system")?.content || "";
+    const convo = grounded
+      .filter((m) => m.role !== "system")
+      .map((m) => `${m.role === "user" ? "Student" : "FISH"}: ${m.content}`)
+      .join("\n");
+    const result = await aiGenerate({ system, prompt: convo });
+
+    if (result.verified && result.text) {
+      return res.json({ reply: result.text, verified: true });
+    }
+    // No AI provider configured — answer deterministically from the student's data.
+    const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    const ask = answerQuestion(lastUser, inputs.askCtx);
+    return res.json({
+      reply: ask.summary,
+      verified: false,
+      note: result.note || "Answered directly from your data (no AI voice model configured).",
+    });
+  } catch (err: any) {
+    return res.status(200).json({
+      reply: "AI assistance is temporarily unavailable. Your academic records remain accessible.",
+      verified: false,
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// API key management. Returns only masked status; raw secret values are NEVER sent to the
+// client. Writes go to the server-side .env (git-ignored). Intended for a trusted local /
+// self-hosted context — do not expose this app publicly without adding auth in front.
+// ---------------------------------------------------------------------------
+app.get("/api/settings/keys", (_req, res) => {
+  res.json({ keys: getKeyStatus() });
+});
+
+app.post("/api/settings/keys", (req, res) => {
+  const { key, value } = req.body || {};
+  if (typeof key !== "string") {
+    return res.status(400).json({ error: "A 'key' is required." });
+  }
+  if (typeof value !== "string") {
+    return res.status(400).json({ error: "A string 'value' is required (may be empty to clear)." });
+  }
+  const result = setKey(key, value);
+  if (result.ok) {
+    return res.json({ ok: true, keys: result.status });
+  }
+  res.status(400).json({ error: result.error });
 });
 
 // 2. Syllabus Intelligence Extractor
