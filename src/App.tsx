@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Navbar } from './components/Navbar';
 import { TodayView } from './components/TodayView';
 import { CoursesView } from './components/CoursesView';
@@ -10,12 +10,19 @@ import { MeView } from './components/MeView';
 import { CompanionDrawer } from './components/CompanionDrawer';
 import { SyllabusModal } from './components/SyllabusModal';
 import { AuthorshipModal } from './components/AuthorshipModal';
+import { CommandCenterView } from './components/CommandCenterView';
+import { AskFishView } from './components/AskFishView';
+import { TalkView } from './components/TalkView';
+import { SearchView } from './components/SearchView';
+import { ReportsView } from './components/ReportsView';
+import { CalendarView } from './components/CalendarView';
+import { StudyView } from './components/StudyView';
+import { DiscussionsView } from './components/DiscussionsView';
+import { SettingsView } from './components/SettingsView';
+import { QuickAddButton } from './components/QuickAdd';
+import { StoreProvider, useStore } from './state/store';
 
 import {
-  INITIAL_INSTITUTIONS,
-  INITIAL_COURSES,
-  INITIAL_ASSIGNMENTS,
-  INITIAL_CITATIONS,
   INITIAL_ACADEMIC_MEMORY,
   INITIAL_STUDENT_PROFILE,
   INITIAL_AUTHORSHIP_DOSSIER
@@ -32,15 +39,16 @@ import {
   AuthorshipDossier
 } from './types';
 
-export default function App() {
-  // Navigation
-  const [activeTab, setActiveTab] = useState<TabType>('TODAY');
+function AppShell() {
+  const store = useStore();
+  // Navigation — defaults to the store-backed Command Center (first-milestone experience).
+  const [activeTab, setActiveTab] = useState<TabType>('COMMAND');
 
   // Academic Knowledge Graph State
-  const [institutions, setInstitutions] = useState<Institution[]>(INITIAL_INSTITUTIONS);
-  const [courses, setCourses] = useState<Course[]>(INITIAL_COURSES);
-  const [assignments, setAssignments] = useState<Assignment[]>(INITIAL_ASSIGNMENTS);
-  const [citations, setCitations] = useState<Citation[]>(INITIAL_CITATIONS);
+  const institutions = store.institutions;
+  const courses = store.courses;
+  const assignments = store.assignments;
+  const citations = store.citations;
   const [academicMemory, setAcademicMemory] = useState<AcademicMemoryNode[]>(INITIAL_ACADEMIC_MEMORY);
   const [profile, setProfile] = useState<StudentProfile>(INITIAL_STUDENT_PROFILE);
 
@@ -48,6 +56,16 @@ export default function App() {
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(assignments[0]?.id || null);
   const [focusAssignmentId, setFocusAssignmentId] = useState<string | null>(null);
   const [focusMinutes, setFocusMinutes] = useState<number>(20);
+
+  useEffect(() => {
+    if (!selectedAssignmentId && assignments[0]?.id) {
+      setSelectedAssignmentId(assignments[0].id);
+      return;
+    }
+    if (selectedAssignmentId && !assignments.some((a) => a.id === selectedAssignmentId)) {
+      setSelectedAssignmentId(assignments[0]?.id || null);
+    }
+  }, [assignments, selectedAssignmentId]);
 
   // Modals & Drawers
   const [isCompanionOpen, setIsCompanionOpen] = useState(false);
@@ -91,26 +109,23 @@ export default function App() {
   };
 
   const handleApplySyllabusData = (courseId: string, extracted: any) => {
+    const existingCourse = courses.find((c) => c.id === courseId);
+    if (!existingCourse) return;
     // Update course policies and professor if extracted
-    setCourses((prev) =>
-      prev.map((c) => {
-        if (c.id !== courseId) return c;
-        return {
-          ...c,
-          professor: {
-            ...c.professor,
-            name: extracted.professor?.name || c.professor.name,
-            email: extracted.professor?.email || c.professor.email,
-            officeHours: extracted.professor?.officeHours || c.professor.officeHours
-          },
-          policies: {
-            ...c.policies,
-            aiPolicy: extracted.policies?.aiPolicy || c.policies.aiPolicy,
-            accommodations: extracted.policies?.accommodations || c.policies.accommodations
-          }
-        };
-      })
-    );
+    store.save('courses', {
+      ...existingCourse,
+      professor: {
+        ...existingCourse.professor,
+        name: extracted.professor?.name || existingCourse.professor.name,
+        email: extracted.professor?.email || existingCourse.professor.email,
+        officeHours: extracted.professor?.officeHours || existingCourse.professor.officeHours
+      },
+      policies: {
+        ...existingCourse.policies,
+        aiPolicy: extracted.policies?.aiPolicy || existingCourse.policies.aiPolicy,
+        accommodations: extracted.policies?.accommodations || existingCourse.policies.accommodations
+      }
+    });
 
     // If new assignments extracted, add them
     if (extracted.assignments && Array.isArray(extracted.assignments)) {
@@ -118,6 +133,8 @@ export default function App() {
         id: `asg-extracted-${Date.now()}-${i}`,
         courseId,
         title: asg.title || 'Extracted Deliverable',
+        type: 'Other',
+        status: 'not_started',
         prompt: asg.description || 'Deliverable synthesized from syllabus.',
         dueDate: asg.dueDate || 'TBD',
         dueTime: '11:59 PM',
@@ -134,53 +151,51 @@ export default function App() {
         rubric: 'Standard institutional criteria.'
       }));
 
-      setAssignments((prev) => [...newAsgs, ...prev]);
+      newAsgs.forEach((a) => store.save('assignments', a));
     }
   };
 
   const handleAddCourse = (newCourse: Course) => {
-    setCourses((prev) => [newCourse, ...prev]);
+    store.save('courses', newCourse);
   };
 
   const handleAddCitation = (newCitation: Citation) => {
-    setCitations((prev) => [newCitation, ...prev]);
+    store.save('citations', newCitation);
   };
 
   const handleUpdateCitations = (updatedCitations: Citation[]) => {
-    setCitations(updatedCitations);
+    const updatedIds = new Set(updatedCitations.map((c) => c.id));
+    citations
+      .filter((c) => !updatedIds.has(c.id))
+      .forEach((c) => store.remove('citations', c.id));
+    updatedCitations.forEach((c) => store.save('citations', c));
   };
 
   const handleToggleChecklistItem = (assignmentId: string, itemId: string) => {
-    setAssignments((prev) =>
-      prev.map((a) => {
-        if (a.id !== assignmentId) return a;
-        return {
-          ...a,
-          checklist: a.checklist.map((item) =>
-            item.id === itemId ? { ...item, completed: !item.completed } : item
-          )
-        };
-      })
-    );
+    const assignment = assignments.find((a) => a.id === assignmentId);
+    if (!assignment) return;
+    store.save('assignments', {
+      ...assignment,
+      checklist: assignment.checklist.map((item) =>
+        item.id === itemId ? { ...item, completed: !item.completed } : item
+      )
+    });
   };
 
   const handleSaveDraft = (assignmentId: string, content: string, versionName: string) => {
-    setAssignments((prev) =>
-      prev.map((a) => {
-        if (a.id !== assignmentId) return a;
-        const newDraft = {
-          id: `draft-${Date.now()}`,
-          versionName,
-          content,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          wordCount: content.trim() ? content.trim().split(/\s+/).length : 0
-        };
-        return {
-          ...a,
-          drafts: [newDraft, ...a.drafts]
-        };
-      })
-    );
+    const assignment = assignments.find((a) => a.id === assignmentId);
+    if (!assignment) return;
+    const newDraft = {
+      id: `draft-${Date.now()}`,
+      versionName,
+      content,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      wordCount: content.trim() ? content.trim().split(/\s+/).length : 0
+    };
+    store.save('assignments', {
+      ...assignment,
+      drafts: [newDraft, ...assignment.drafts]
+    });
   };
 
   const handleUpdateProfile = (updated: Partial<StudentProfile>) => {
@@ -206,7 +221,25 @@ export default function App() {
       />
 
       {/* Main Content View Container */}
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-16">
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-28 md:pb-24">
+        {activeTab === 'COMMAND' && <CommandCenterView />}
+
+        {activeTab === 'ASK' && <AskFishView />}
+
+        {activeTab === 'TALK' && <TalkView />}
+
+        {activeTab === 'SEARCH' && <SearchView onNavigate={setActiveTab} />}
+
+        {activeTab === 'CALENDAR' && <CalendarView />}
+
+        {activeTab === 'STUDY' && <StudyView />}
+
+        {activeTab === 'DISCUSS' && <DiscussionsView />}
+
+        {activeTab === 'REPORTS' && <ReportsView />}
+
+        {activeTab === 'SETTINGS' && <SettingsView />}
+
         {activeTab === 'TODAY' && (
           <TodayView
             institutions={institutions}
@@ -329,6 +362,17 @@ export default function App() {
         dossier={INITIAL_AUTHORSHIP_DOSSIER}
         citations={citations}
       />
+
+      {/* Universal Quick Add (persists through the store) */}
+      <QuickAddButton />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <StoreProvider>
+      <AppShell />
+    </StoreProvider>
   );
 }
