@@ -11,7 +11,8 @@ import {
   User,
   ExternalLink,
   Zap,
-  ArrowRight
+  ArrowRight,
+  Video
 } from 'lucide-react';
 import { CoachMessage, Assignment, Course, Citation } from '../types';
 
@@ -23,6 +24,7 @@ interface CompanionDrawerProps {
   citations: Citation[];
   onStartFocus: (assignmentId?: string, minutes?: number) => void;
   onOpenWritingStudio: (assignmentId: string) => void;
+  onOpenAnamAvatar?: () => void;
 }
 
 type CoachRole = 'study_coach' | 'research_librarian' | 'apa_coach' | 'assignment_coach' | 'access_coach' | 'body_double';
@@ -34,7 +36,8 @@ export const CompanionDrawer: React.FC<CompanionDrawerProps> = ({
   currentCourse,
   citations,
   onStartFocus,
-  onOpenWritingStudio
+  onOpenWritingStudio,
+  onOpenAnamAvatar
 }) => {
   const [selectedRole, setSelectedRole] = useState<CoachRole>('study_coach');
   const [inputText, setInputText] = useState('');
@@ -166,13 +169,29 @@ export const CompanionDrawer: React.FC<CompanionDrawerProps> = ({
             <p className="text-[11px] text-neutral-500 font-sans">Context-grounded scholarly coaching</p>
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 cursor-pointer"
-          id="companion-close-button"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {onOpenAnamAvatar && (
+            <button
+              onClick={() => {
+                onClose();
+                onOpenAnamAvatar();
+              }}
+              className="flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-900 hover:bg-amber-100 cursor-pointer shadow-xs"
+              title="Switch to Live Video Avatar (Anam.ai)"
+              id="companion-switch-anam-btn"
+            >
+              <Video className="h-3 w-3 text-amber-700 animate-pulse" />
+              <span>Live Avatar</span>
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 cursor-pointer"
+            id="companion-close-button"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {/* Role Selector Tabs */}

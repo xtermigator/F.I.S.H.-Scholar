@@ -153,19 +153,59 @@ POLICIES:
           </div>
 
           {/* Paste or Upload Syllabus */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
               <label className="text-xs font-semibold uppercase tracking-wider text-neutral-600">
-                Syllabus Content (PDF / Text / Canvas export)
+                Syllabus File Upload or Text Paste
               </label>
-              <span className="text-[11px] text-neutral-500">Multimodal Text & Structure Analyzer</span>
+              <span className="text-[11px] text-neutral-500">PDF, TXT, DOCX, Markdown or Canvas Export</span>
+            </div>
+
+            {/* Drag & Drop Zone */}
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const file = e.dataTransfer.files?.[0];
+                if (file) {
+                  const reader = new FileReader();
+                  reader.onload = (evt) => {
+                    setSyllabusText(evt.target?.result as string);
+                  };
+                  reader.readAsText(file);
+                }
+              }}
+              className="relative rounded-xl border border-dashed border-neutral-300 bg-neutral-50/70 p-4 text-center hover:border-neutral-400 transition-colors cursor-pointer"
+            >
+              <Upload className="h-6 w-6 text-neutral-400 mx-auto mb-1.5" />
+              <div className="text-xs font-semibold text-neutral-800">
+                Drop your syllabus file here (.pdf, .txt, .md, .docx)
+              </div>
+              <div className="text-[10px] text-neutral-500 mt-0.5">
+                or click to browse your local files
+              </div>
+              <input
+                type="file"
+                accept=".txt,.pdf,.md,.doc,.docx"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                      setSyllabusText(evt.target?.result as string);
+                    };
+                    reader.readAsText(file);
+                  }
+                }}
+                className="absolute inset-0 opacity-0 cursor-pointer"
+              />
             </div>
 
             <textarea
-              rows={8}
+              rows={7}
               value={syllabusText}
               onChange={(e) => setSyllabusText(e.target.value)}
-              placeholder="Paste full syllabus text, assignment tables, policies, and reading lists here..."
+              placeholder="Or paste full syllabus text, assignment tables, grading breakdown, policies, and reading lists here..."
               className="w-full rounded-xl border border-neutral-300 bg-white p-3.5 text-xs text-neutral-900 placeholder-neutral-400 focus:border-neutral-900 focus:outline-none font-mono shadow-xs"
             />
           </div>

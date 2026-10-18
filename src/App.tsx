@@ -1,333 +1,312 @@
-import React, { useState } from 'react';
-import { Navbar } from './components/Navbar';
-import { TodayView } from './components/TodayView';
-import { CoursesView } from './components/CoursesView';
-import { AssignmentsView } from './components/AssignmentsView';
-import { LibraryView } from './components/LibraryView';
-import { WriteView } from './components/WriteView';
-import { FocusView } from './components/FocusView';
-import { MeView } from './components/MeView';
-import { CompanionDrawer } from './components/CompanionDrawer';
-import { SyllabusModal } from './components/SyllabusModal';
-import { AuthorshipModal } from './components/AuthorshipModal';
+import React, { useState, useEffect } from 'react';
+import {
+  BookOpen,
+  Search,
+  CheckCircle2,
+  FileText,
+  Database,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles
+} from 'lucide-react';
+import { DissertationMatrixDashboard } from './components/matrix/DissertationMatrixDashboard';
+import { SourceIntegrationModal } from './components/matrix/SourceIntegrationModal';
+import { ApaComplianceModal } from './components/matrix/ApaComplianceModal';
+import { CitationGeneratorModal } from './components/matrix/CitationGeneratorModal';
+import { CellEditorModal } from './components/matrix/CellEditorModal';
+import { ThemeManagerModal } from './components/matrix/ThemeManagerModal';
+import { SourceDetailModal } from './components/matrix/SourceDetailModal';
+import { SupabaseAuthModal } from './components/matrix/SupabaseAuthModal';
 
 import {
-  INITIAL_INSTITUTIONS,
-  INITIAL_COURSES,
-  INITIAL_ASSIGNMENTS,
-  INITIAL_CITATIONS,
-  INITIAL_ACADEMIC_MEMORY,
-  INITIAL_STUDENT_PROFILE,
-  INITIAL_AUTHORSHIP_DOSSIER
-} from './data/mockData';
+  DissertationProject,
+  MatrixTheme,
+  PeerReviewedSource,
+  MatrixCell
+} from './types/matrix';
+import { MatrixStorage } from './lib/matrixStorage';
+import { SupabaseService, isSupabaseConfigured } from './lib/supabase';
+import { auditSourceApa7 } from './lib/apa7Engine';
 
-import {
-  TabType,
-  Institution,
-  Course,
-  Assignment,
-  Citation,
-  AcademicMemoryNode,
-  StudentProfile,
-  AuthorshipDossier
-} from './types';
+type ActiveViewTab = 'matrix' | 'sources' | 'apa' | 'citations';
 
 export default function App() {
-  // Navigation
-  const [activeTab, setActiveTab] = useState<TabType>('TODAY');
+  // Navigation & Views
+  const [activeTab, setActiveTab] = useState<ActiveViewTab>('matrix');
 
-  // Academic Knowledge Graph State
-  const [institutions, setInstitutions] = useState<Institution[]>(INITIAL_INSTITUTIONS);
-  const [courses, setCourses] = useState<Course[]>(INITIAL_COURSES);
-  const [assignments, setAssignments] = useState<Assignment[]>(INITIAL_ASSIGNMENTS);
-  const [citations, setCitations] = useState<Citation[]>(INITIAL_CITATIONS);
-  const [academicMemory, setAcademicMemory] = useState<AcademicMemoryNode[]>(INITIAL_ACADEMIC_MEMORY);
-  const [profile, setProfile] = useState<StudentProfile>(INITIAL_STUDENT_PROFILE);
+  // Core State
+  const [project, setProject] = useState<DissertationProject>(() => MatrixStorage.loadProject());
+  const [themes, setThemes] = useState<MatrixTheme[]>(() => MatrixStorage.loadThemes());
+  const [sources, setSources] = useState<PeerReviewedSource[]>(() => MatrixStorage.loadSources());
+  const [cells, setCells] = useState<MatrixCell[]>(() => MatrixStorage.loadCells());
 
-  // Active selections
-  const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(assignments[0]?.id || null);
-  const [focusAssignmentId, setFocusAssignmentId] = useState<string | null>(null);
-  const [focusMinutes, setFocusMinutes] = useState<number>(20);
+  // Modals
+  const [isSourceModalOpen, setIsSourceModalOpen] = useState(false);
+  const [isApaModalOpen, setIsApaModalOpen] = useState(false);
+  const [isCitationModalOpen, setIsCitationModalOpen] = useState(false);
+  const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
+  const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
 
-  // Modals & Drawers
-  const [isCompanionOpen, setIsCompanionOpen] = useState(false);
-  const [isSyllabusModalOpen, setIsSyllabusModalOpen] = useState(false);
-  const [syllabusTargetCourseId, setSyllabusTargetCourseId] = useState<string | undefined>(undefined);
-  const [isAuthorshipModalOpen, setIsAuthorshipModalOpen] = useState(false);
-  const [authorshipTargetAsgId, setAuthorshipTargetAsgId] = useState<string | null>(null);
+  // Cell Editor Modal
+  const [selectedCellTarget, setSelectedCellTarget] = useState<{
+    source: PeerReviewedSource;
+    theme: MatrixTheme;
+    cell: MatrixCell | null;
+  } | null>(null);
 
-  // Handlers
-  const handleStartFocus = (assignmentId?: string, minutes?: number) => {
-    if (assignmentId) {
-      setFocusAssignmentId(assignmentId);
-      setSelectedAssignmentId(assignmentId);
-    }
-    if (minutes) setFocusMinutes(minutes);
-    setActiveTab('FOCUS');
-  };
+  // Source Detail Modal
+  const [selectedSourceDetail, setSelectedSourceDetail] = useState<PeerReviewedSource | null>(null);
 
-  const handleOpenAssignment = (assignmentId: string) => {
-    setSelectedAssignmentId(assignmentId);
-    setActiveTab('ASSIGNMENTS');
-  };
+  // Sync state
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
-  const handleOpenWritingStudio = (assignmentId: string) => {
-    setSelectedAssignmentId(assignmentId);
-    setActiveTab('WRITE');
-  };
+  // Auto-save debounced to localStorage & Supabase
+  useEffect(() => {
+    MatrixStorage.saveProject(project);
+    MatrixStorage.saveThemes(themes);
+    MatrixStorage.saveSources(sources);
+    MatrixStorage.saveCells(cells);
+  }, [project, themes, sources, cells]);
 
-  const handleAskCoach = (contextPrompt: string) => {
-    setIsCompanionOpen(true);
-  };
-
-  const handleOpenSyllabusModal = (courseId?: string) => {
-    setSyllabusTargetCourseId(courseId);
-    setIsSyllabusModalOpen(true);
-  };
-
-  const handleOpenAuthorshipDossier = (assignmentId: string) => {
-    setAuthorshipTargetAsgId(assignmentId);
-    setIsAuthorshipModalOpen(true);
-  };
-
-  const handleApplySyllabusData = (courseId: string, extracted: any) => {
-    // Update course policies and professor if extracted
-    setCourses((prev) =>
-      prev.map((c) => {
-        if (c.id !== courseId) return c;
-        return {
-          ...c,
-          professor: {
-            ...c.professor,
-            name: extracted.professor?.name || c.professor.name,
-            email: extracted.professor?.email || c.professor.email,
-            officeHours: extracted.professor?.officeHours || c.professor.officeHours
-          },
-          policies: {
-            ...c.policies,
-            aiPolicy: extracted.policies?.aiPolicy || c.policies.aiPolicy,
-            accommodations: extracted.policies?.accommodations || c.policies.accommodations
-          }
-        };
-      })
-    );
-
-    // If new assignments extracted, add them
-    if (extracted.assignments && Array.isArray(extracted.assignments)) {
-      const newAsgs: Assignment[] = extracted.assignments.map((asg: any, i: number) => ({
-        id: `asg-extracted-${Date.now()}-${i}`,
-        courseId,
-        title: asg.title || 'Extracted Deliverable',
-        prompt: asg.description || 'Deliverable synthesized from syllabus.',
-        dueDate: asg.dueDate || 'TBD',
-        dueTime: '11:59 PM',
-        urgency: 'due_soon',
-        points: 100,
-        weight: asg.weight || '15% of Final Grade',
-        estimatedMinutes: 45,
-        requiredReadings: [],
-        checklist: [
-          { id: 'ck-1', text: 'Review syllabus guidelines', completed: false },
-          { id: 'ck-2', text: 'Draft in Writing Studio', completed: false }
-        ],
-        drafts: [],
-        rubric: 'Standard institutional criteria.'
-      }));
-
-      setAssignments((prev) => [...newAsgs, ...prev]);
+  // Sync to Supabase trigger
+  const handleCloudSync = async () => {
+    setIsSyncing(true);
+    setSyncStatus(null);
+    try {
+      const res = await SupabaseService.syncToSupabase({
+        project,
+        sources,
+        themes,
+        matrixCells: cells
+      });
+      setSyncStatus(res.message);
+      setTimeout(() => setSyncStatus(null), 4000);
+    } catch (err: any) {
+      setSyncStatus('Sync notice: Preserved in local vault.');
+      setTimeout(() => setSyncStatus(null), 4000);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
-  const handleAddCourse = (newCourse: Course) => {
-    setCourses((prev) => [newCourse, ...prev]);
+  // Add newly sourced article
+  const handleAddSource = (newSource: PeerReviewedSource) => {
+    const updatedSources = [newSource, ...sources];
+    setSources(updatedSources);
+
+    // Prompt user with newly added source
+    setSyncStatus(`Added "${newSource.title.slice(0, 36)}..." to matrix.`);
+    setTimeout(() => setSyncStatus(null), 4000);
   };
 
-  const handleAddCitation = (newCitation: Citation) => {
-    setCitations((prev) => [newCitation, ...prev]);
+  // Update source
+  const handleUpdateSource = (updatedSource: PeerReviewedSource) => {
+    const audit = auditSourceApa7(updatedSource);
+    const withScore = { ...updatedSource, apaComplianceScore: audit.score };
+    setSources(prev => prev.map(s => s.id === withScore.id ? withScore : s));
   };
 
-  const handleUpdateCitations = (updatedCitations: Citation[]) => {
-    setCitations(updatedCitations);
+  // Batch update sources (e.g. from Auto-Fix All in APA compliance modal)
+  const handleBatchUpdateSources = (updatedSources: PeerReviewedSource[]) => {
+    setSources(updatedSources);
+    setSyncStatus('Auto-fixed all sources to strict APA 7th standards.');
+    setTimeout(() => setSyncStatus(null), 4000);
   };
 
-  const handleToggleChecklistItem = (assignmentId: string, itemId: string) => {
-    setAssignments((prev) =>
-      prev.map((a) => {
-        if (a.id !== assignmentId) return a;
-        return {
-          ...a,
-          checklist: a.checklist.map((item) =>
-            item.id === itemId ? { ...item, completed: !item.completed } : item
-          )
-        };
-      })
-    );
+  // Delete source
+  const handleDeleteSource = (sourceId: string) => {
+    setSources(prev => prev.filter(s => s.id !== sourceId));
+    setCells(prev => prev.filter(c => c.sourceId !== sourceId));
   };
 
-  const handleSaveDraft = (assignmentId: string, content: string, versionName: string) => {
-    setAssignments((prev) =>
-      prev.map((a) => {
-        if (a.id !== assignmentId) return a;
-        const newDraft = {
-          id: `draft-${Date.now()}`,
-          versionName,
-          content,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          wordCount: content.trim() ? content.trim().split(/\s+/).length : 0
-        };
-        return {
-          ...a,
-          drafts: [newDraft, ...a.drafts]
-        };
-      })
-    );
+  // Save/Update Cell
+  const handleSaveCell = (updatedCell: MatrixCell) => {
+    setCells(prev => {
+      const existingIdx = prev.findIndex(
+        c => c.sourceId === updatedCell.sourceId && c.themeId === updatedCell.themeId
+      );
+      if (existingIdx >= 0) {
+        const copy = [...prev];
+        copy[existingIdx] = updatedCell;
+        return copy;
+      }
+      return [...prev, updatedCell];
+    });
   };
 
-  const handleUpdateProfile = (updated: Partial<StudentProfile>) => {
-    setProfile((prev) => ({ ...prev, ...updated }));
+  // Save themes
+  const handleSaveThemes = (updatedThemes: MatrixTheme[]) => {
+    setThemes(updatedThemes);
   };
-
-  // Selected assignment / course context for companion
-  const currentAssignment = assignments.find((a) => a.id === selectedAssignmentId) || assignments[0];
-  const currentCourse = courses.find((c) => c.id === currentAssignment?.courseId);
-  const currentInstitution = institutions.find((i) => i.id === currentCourse?.institutionId);
 
   return (
-    <div className="min-h-screen bg-[#FDFDFD] text-neutral-900 font-sans antialiased selection:bg-amber-100 selection:text-amber-900">
-      {/* Universal Academic Navbar */}
-      <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        institutions={institutions}
-        selectedInstitutionId={null}
-        setSelectedInstitutionId={() => {}}
-        onOpenCompanion={() => setIsCompanionOpen(!isCompanionOpen)}
-        onQuickFocus={() => handleStartFocus(undefined, 20)}
-      />
+    <div className="flex h-screen flex-col bg-[#FDFDFD] text-stone-900 font-sans selection:bg-amber-100 selection:text-amber-950 overflow-hidden">
+      {/* Top Bar Contract: Zone 1 (Brand) — Zone 2 (Nav links) — Zone 3 (Actions) */}
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white px-6 z-30">
+        {/* Zone 1: Single text element wordmark in display font */}
+        <div className="flex items-center gap-3">
+          <a
+            href="/"
+            onClick={(e) => { e.preventDefault(); setActiveTab('matrix'); }}
+            className="font-serif text-lg font-bold tracking-tight text-stone-900 hover:text-stone-700 transition-colors whitespace-nowrap"
+          >
+            Dissertation Matrix
+          </a>
+        </div>
 
-      {/* Main Content View Container */}
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-16">
-        {activeTab === 'TODAY' && (
-          <TodayView
-            institutions={institutions}
-            courses={courses}
-            assignments={assignments}
-            citations={citations}
-            academicMemory={academicMemory}
-            profile={profile}
-            onNavigateTab={setActiveTab}
-            onStartFocus={handleStartFocus}
-            onOpenAssignment={handleOpenAssignment}
-            onAskCoach={handleAskCoach}
-            onOpenSyllabusIntelligence={handleOpenSyllabusModal}
-          />
-        )}
+        {/* Zone 2: 4-6 clean text navigation links */}
+        <nav className="hidden md:flex items-center gap-8 text-xs font-medium text-stone-600">
+          <button
+            onClick={() => setActiveTab('matrix')}
+            className={`transition-colors hover:text-stone-900 pb-0.5 border-b-2 ${
+              activeTab === 'matrix' ? 'border-stone-900 text-stone-900 font-semibold' : 'border-transparent text-stone-600'
+            }`}
+          >
+            Matrix Dashboard
+          </button>
+          <button
+            onClick={() => setIsSourceModalOpen(true)}
+            className="transition-colors hover:text-stone-900 pb-0.5 border-b-2 border-transparent text-stone-600"
+          >
+            Source Integration
+          </button>
+          <button
+            onClick={() => setIsApaModalOpen(true)}
+            className="transition-colors hover:text-stone-900 pb-0.5 border-b-2 border-transparent text-stone-600"
+          >
+            APA 7th Compliance
+          </button>
+          <button
+            onClick={() => setIsCitationModalOpen(true)}
+            className="transition-colors hover:text-stone-900 pb-0.5 border-b-2 border-transparent text-stone-600"
+          >
+            Citation Generator & Bibliography
+          </button>
+        </nav>
 
-        {activeTab === 'COURSES' && (
-          <CoursesView
-            institutions={institutions}
-            courses={courses}
-            assignments={assignments}
-            onOpenSyllabusModal={handleOpenSyllabusModal}
-            onOpenAssignment={handleOpenAssignment}
-            onAddCourse={handleAddCourse}
-            onAskCoach={handleAskCoach}
-          />
-        )}
+        {/* Zone 3: 1-2 primary actions */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setIsSupabaseModalOpen(true)}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono border border-stone-200 hover:border-stone-400 bg-white text-stone-700 transition-colors whitespace-nowrap"
+            title="Database persistence & authentication"
+          >
+            <Database className="h-3 w-3 text-stone-500" />
+            <span>{isSupabaseConfigured ? 'Supabase Sync' : 'Local Vault'}</span>
+          </button>
 
-        {activeTab === 'ASSIGNMENTS' && (
-          <AssignmentsView
-            assignments={assignments}
-            courses={courses}
-            institutions={institutions}
-            citations={citations}
-            selectedAssignmentId={selectedAssignmentId}
-            onSelectAssignment={setSelectedAssignmentId}
-            onStartFocus={handleStartFocus}
-            onOpenWritingStudio={handleOpenWritingStudio}
-            onToggleChecklistItem={handleToggleChecklistItem}
-            onGenerateAuthorshipDossier={handleOpenAuthorshipDossier}
-          />
-        )}
+          <button
+            onClick={() => setIsSourceModalOpen(true)}
+            className="flex items-center gap-1.5 bg-stone-900 text-white px-3.5 py-1.5 text-xs font-medium hover:bg-stone-800 transition-colors whitespace-nowrap rounded-xs shadow-2xs"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>Add Source</span>
+          </button>
+        </div>
+      </header>
 
-        {activeTab === 'LIBRARY' && (
-          <LibraryView
-            citations={citations}
-            academicMemory={academicMemory}
-            courses={courses}
-            institutions={institutions}
-            onAddCitation={handleAddCitation}
-            onUpdateCitations={handleUpdateCitations}
-          />
-        )}
+      {/* Sync Status Banner if active */}
+      {syncStatus && (
+        <aside aria-label="Notification" className="bg-stone-900 text-stone-100 text-xs py-1.5 px-6 flex items-center justify-between border-b border-stone-800 animate-in fade-in duration-200">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+            <span>{syncStatus}</span>
+          </div>
+          <button
+            onClick={() => setSyncStatus(null)}
+            className="text-stone-400 hover:text-white text-[11px]"
+          >
+            Dismiss
+          </button>
+        </aside>
+      )}
 
-        {activeTab === 'WRITE' && (
-          <WriteView
-            assignments={assignments}
-            courses={courses}
-            institutions={institutions}
-            citations={citations}
-            profile={profile}
-            activeAssignmentId={selectedAssignmentId}
-            onSelectAssignment={setSelectedAssignmentId}
-            onSaveDraft={handleSaveDraft}
-            onOpenAuthorshipDossier={handleOpenAuthorshipDossier}
-            onStartFocus={handleStartFocus}
-          />
-        )}
-
-        {activeTab === 'FOCUS' && (
-          <FocusView
-            assignments={assignments}
-            courses={courses}
-            initialAssignmentId={focusAssignmentId || selectedAssignmentId}
-            initialMinutes={focusMinutes}
-            onOpenWritingStudio={handleOpenWritingStudio}
-            onOpenCompanionWithRole={(role) => setIsCompanionOpen(true)}
-          />
-        )}
-
-        {activeTab === 'ME' && (
-          <MeView
-            profile={profile}
-            courses={courses}
-            institutions={institutions}
-            onUpdateProfile={handleUpdateProfile}
-            onOpenCompanionWithRole={(role) => setIsCompanionOpen(true)}
-          />
-        )}
+      {/* Main View Area */}
+      <main className="flex flex-1 flex-col overflow-hidden">
+        <DissertationMatrixDashboard
+          project={project}
+          themes={themes}
+          sources={sources}
+          cells={cells}
+          onOpenSourceIntegration={() => setIsSourceModalOpen(true)}
+          onOpenApaCompliance={() => setIsApaModalOpen(true)}
+          onOpenCitationGenerator={() => setIsCitationModalOpen(true)}
+          onOpenThemeManager={() => setIsThemeModalOpen(true)}
+          onOpenCellEditor={(source, theme, cell) => {
+            setSelectedCellTarget({ source, theme, cell });
+          }}
+          onOpenSourceDetail={(source) => {
+            setSelectedSourceDetail(source);
+          }}
+          onUpdateProject={(p) => setProject(p)}
+        />
       </main>
 
-      {/* AI Companion Role-Based Coaching Drawer */}
-      <CompanionDrawer
-        isOpen={isCompanionOpen}
-        onClose={() => setIsCompanionOpen(false)}
-        currentAssignment={currentAssignment}
-        currentCourse={currentCourse}
-        citations={citations}
-        onStartFocus={handleStartFocus}
-        onOpenWritingStudio={handleOpenWritingStudio}
+      {/* MODAL 1: Source Integration Modal */}
+      <SourceIntegrationModal
+        isOpen={isSourceModalOpen}
+        onClose={() => setIsSourceModalOpen(false)}
+        onAddSource={handleAddSource}
       />
 
-      {/* Syllabus Intelligence Modal */}
-      <SyllabusModal
-        isOpen={isSyllabusModalOpen}
-        onClose={() => setIsSyllabusModalOpen(false)}
-        courses={courses}
-        institutions={institutions}
-        selectedCourseId={syllabusTargetCourseId}
-        onApplyExtractedData={handleApplySyllabusData}
+      {/* MODAL 2: APA 7th Compliance Audit Modal */}
+      <ApaComplianceModal
+        isOpen={isApaModalOpen}
+        onClose={() => setIsApaModalOpen(false)}
+        sources={sources}
+        onUpdateSource={handleUpdateSource}
+        onBatchUpdateSources={handleBatchUpdateSources}
       />
 
-      {/* Authorship Evidence & Provenance Dossier Modal */}
-      <AuthorshipModal
-        isOpen={isAuthorshipModalOpen}
-        onClose={() => setIsAuthorshipModalOpen(false)}
-        assignment={currentAssignment}
-        course={currentCourse}
-        institution={currentInstitution}
-        dossier={INITIAL_AUTHORSHIP_DOSSIER}
-        citations={citations}
+      {/* MODAL 3: Citation Generator & Annotated Bibliography Modal */}
+      <CitationGeneratorModal
+        isOpen={isCitationModalOpen}
+        onClose={() => setIsCitationModalOpen(false)}
+        sources={sources}
+        themes={themes}
+        cells={cells}
+        projectTitle={project.title}
+      />
+
+      {/* MODAL 4: Matrix Themes Manager Modal */}
+      <ThemeManagerModal
+        isOpen={isThemeModalOpen}
+        onClose={() => setIsThemeModalOpen(false)}
+        themes={themes}
+        onSaveThemes={handleSaveThemes}
+      />
+
+      {/* MODAL 5: Synthesis Cell Editor Drawer / Modal */}
+      {selectedCellTarget && (
+        <CellEditorModal
+          isOpen={Boolean(selectedCellTarget)}
+          onClose={() => setSelectedCellTarget(null)}
+          cell={selectedCellTarget.cell}
+          source={selectedCellTarget.source}
+          theme={selectedCellTarget.theme}
+          onSave={handleSaveCell}
+        />
+      )}
+
+      {/* MODAL 6: Source Detail & Metadata Modal */}
+      {selectedSourceDetail && (
+        <SourceDetailModal
+          isOpen={Boolean(selectedSourceDetail)}
+          onClose={() => setSelectedSourceDetail(null)}
+          source={selectedSourceDetail}
+          onSaveSource={handleUpdateSource}
+          onDeleteSource={handleDeleteSource}
+        />
+      )}
+
+      {/* MODAL 7: Supabase Authentication & Sync Modal */}
+      <SupabaseAuthModal
+        isOpen={isSupabaseModalOpen}
+        onClose={() => setIsSupabaseModalOpen(false)}
+        onSyncTrigger={handleCloudSync}
+        isSyncing={isSyncing}
       />
     </div>
   );

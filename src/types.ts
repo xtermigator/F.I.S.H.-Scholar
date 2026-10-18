@@ -1,4 +1,4 @@
-export type TabType = 'TODAY' | 'COURSES' | 'ASSIGNMENTS' | 'LIBRARY' | 'WRITE' | 'FOCUS' | 'ME';
+export type TabType = 'TODAY' | 'COURSES' | 'ASSIGNMENTS' | 'LIBRARY' | 'WRITE' | 'FOCUS' | 'CHAT' | 'ME';
 
 export interface Institution {
   id: string;

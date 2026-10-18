@@ -1,6 +1,6 @@
 {
   "name": "F.I.S.H. Scholar",
-  "description": "F.I.S.H. (Focus, Integrity, Synthesis, & Harmony) Scholar — Personal Academic Operating System and command center connecting multi-college coursework, syllabus intelligence, APA citation vault, writing studio, GitHub sync, and ADHD executive coaching.",
-  "requestFramePermissions": [],
+  "description": "F.I.S.H. (Focus, Integrity, Synthesis, & Harmony) Scholar — Personal Academic Operating System and command center connecting multi-college coursework, syllabus intelligence, APA citation vault, Google Chat collaborative study spaces, writing studio, and executive coaching.",
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
