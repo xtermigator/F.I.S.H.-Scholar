@@ -8,7 +8,8 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  Github
 } from 'lucide-react';
 import { DissertationMatrixDashboard } from './components/matrix/DissertationMatrixDashboard';
 import { SourceIntegrationModal } from './components/matrix/SourceIntegrationModal';
@@ -18,6 +19,7 @@ import { CellEditorModal } from './components/matrix/CellEditorModal';
 import { ThemeManagerModal } from './components/matrix/ThemeManagerModal';
 import { SourceDetailModal } from './components/matrix/SourceDetailModal';
 import { SupabaseAuthModal } from './components/matrix/SupabaseAuthModal';
+import { GitHubExportModal } from './components/matrix/GitHubExportModal';
 
 import {
   DissertationProject,
@@ -47,6 +49,7 @@ export default function App() {
   const [isCitationModalOpen, setIsCitationModalOpen] = useState(false);
   const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
+  const [isGitHubModalOpen, setIsGitHubModalOpen] = useState(false);
 
   // Cell Editor Modal
   const [selectedCellTarget, setSelectedCellTarget] = useState<{
@@ -189,8 +192,17 @@ export default function App() {
         {/* Zone 3: 1-2 primary actions */}
         <div className="flex items-center gap-3">
           <button
+            onClick={() => setIsGitHubModalOpen(true)}
+            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono border border-stone-300 hover:border-stone-800 bg-white text-stone-800 transition-colors whitespace-nowrap cursor-pointer shadow-2xs"
+            title="Save and export codebase to GitHub"
+          >
+            <Github className="h-3 w-3 text-stone-700" />
+            <span>Save to GitHub</span>
+          </button>
+
+          <button
             onClick={() => setIsSupabaseModalOpen(true)}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono border border-stone-200 hover:border-stone-400 bg-white text-stone-700 transition-colors whitespace-nowrap"
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono border border-stone-200 hover:border-stone-400 bg-white text-stone-700 transition-colors whitespace-nowrap cursor-pointer"
             title="Database persistence & authentication"
           >
             <Database className="h-3 w-3 text-stone-500" />
@@ -307,6 +319,12 @@ export default function App() {
         onClose={() => setIsSupabaseModalOpen(false)}
         onSyncTrigger={handleCloudSync}
         isSyncing={isSyncing}
+      />
+
+      {/* MODAL 8: GitHub Save & Export Modal */}
+      <GitHubExportModal
+        isOpen={isGitHubModalOpen}
+        onClose={() => setIsGitHubModalOpen(false)}
       />
     </div>
   );

@@ -2414,6 +2414,71 @@ Parse this content into 3 structured categories in JSON:
   }
 });
 
+// Git & GitHub Export Endpoints
+app.get("/api/git/status", async (_req, res) => {
+  try {
+    const { exec } = await import("child_process");
+    exec("git log -1 --oneline && git remote -v && git branch --show-current", (err, stdout, stderr) => {
+      if (err) {
+        return res.status(500).json({ error: stderr || err.message });
+      }
+      res.json({ success: true, details: stdout.trim() });
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/git/download", async (_req, res) => {
+  try {
+    const { exec } = await import("child_process");
+    const zipPath = path.join(process.cwd(), "dissertation-matrix-repo.zip");
+    exec(`git archive --format=zip --output="${zipPath}" HEAD`, (err) => {
+      if (err) {
+        return res.status(500).json({ error: "Failed to create archive" });
+      }
+      res.download(zipPath, "dissertation-matrix-repo.zip", (downloadErr) => {
+        if (downloadErr) {
+          console.error("Download error:", downloadErr);
+        }
+      });
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/git/push", async (req, res) => {
+  const { repoUrl, personalAccessToken } = req.body;
+  if (!repoUrl || typeof repoUrl !== "string") {
+    return res.status(400).json({ error: "GitHub repository URL is required (e.g., https://github.com/username/repository.git)." });
+  }
+
+  const { exec } = await import("child_process");
+  let pushUrl = repoUrl.trim();
+  if (personalAccessToken && pushUrl.startsWith("https://")) {
+    const token = encodeURIComponent(personalAccessToken.trim());
+    pushUrl = pushUrl.replace("https://", `https://${token}@`);
+  }
+
+  // Remove existing origin, configure remote, and push
+  exec(`git remote remove origin 2>/dev/null || true; git remote add origin "${pushUrl}" && git branch -M main && git push -u origin main`, (err, stdout, stderr) => {
+    const sanitize = (text: string) => personalAccessToken ? text.split(personalAccessToken).join("******") : text;
+    if (err) {
+      return res.status(500).json({
+        success: false,
+        error: sanitize(stderr || err.message),
+        stdout: sanitize(stdout)
+      });
+    }
+    return res.json({
+      success: true,
+      message: "Successfully pushed repository to GitHub main branch!",
+      output: sanitize(stdout || stderr)
+    });
+  });
+});
+
 // Vite Middleware for Dev and Static Serving for Production
 async function start() {
   if (process.env.NODE_ENV !== "production") {
