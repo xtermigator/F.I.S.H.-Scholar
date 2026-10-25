@@ -24,6 +24,7 @@ import type {
 } from '../types';
 import { createRepository } from '../data/repository';
 import { buildDemoSeed } from '../data/seed';
+import { buildLiteratureKnowledgeSeed } from '../data/knowledgeBase';
 
 /**
  * Central application store. Loads all persisted entities from the Repository on boot and
@@ -60,6 +61,7 @@ type StoreContextValue = StoreState & StoreActions;
 
 const StoreContext = createContext<StoreContextValue | null>(null);
 const INITIALIZED_MARKER_ID = '__store_initialized__';
+const KB_LITERATURE_MARKER_ID = '__kb_literature_v1__';
 
 function nowIso() {
   return new Date().toISOString();
@@ -155,6 +157,24 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
           await repo.put('settings', {
             id: INITIALIZED_MARKER_ID,
             key: 'store_initialized',
+            value: 'true',
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+            isDemo: false,
+          } as Persistable);
+        }
+        // One-time literature knowledge base (real, non-demo records). Runs independently of
+        // the demo seed so existing installs also receive it; guarded by its own marker so a
+        // student's later edits/deletions of these records are not overwritten.
+        const kbMarker = await repo.get('settings', KB_LITERATURE_MARKER_ID);
+        if (!kbMarker) {
+          const kb = buildLiteratureKnowledgeSeed();
+          for (const [collection, entities] of Object.entries(kb)) {
+            await repo.bulkPut(collection as Collection, entities as EntityBase[]);
+          }
+          await repo.put('settings', {
+            id: KB_LITERATURE_MARKER_ID,
+            key: 'kb_literature_v1',
             value: 'true',
             createdAt: nowIso(),
             updatedAt: nowIso(),
