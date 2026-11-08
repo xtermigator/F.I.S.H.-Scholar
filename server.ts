@@ -4,16 +4,82 @@ import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 
+import {
+  listProviders,
+  generate as aiGenerate,
+  getActiveProvider,
+} from "./src/server/aiProvider";
+import {
+  isNotionConfigured,
+  checkConnection as notionCheckConnection,
+  listDatabases as notionListDatabases,
+  previewDatabase as notionPreviewDatabase,
+} from "./src/server/notion";
+import {
+  isAnamConfigured,
+  ephemeralConfigIncomplete as anamConfigIncomplete,
+  createSessionToken as anamCreateSessionToken,
+} from "./src/server/anam";
+import { composeGroundedMessages, type ChatMessage, type GroundingInputs } from "./src/state/chatGrounding";
+import { answerQuestion } from "./src/state/askFish";
+import { getKeyStatus, setKey } from "./src/server/keyStore";
+
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+// Hosts like Render/Railway inject the port to bind via process.env.PORT; fall back to 3000 locally.
+const PORT = Number(process.env.PORT) || 3000;
+
+// Configurable Gemini model. Defaults to a real, current model family; override with
+// GEMINI_MODEL. (The previous hard-coded "gemini-3.7-flash" was not a valid model name.)
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+const AI_ROUTE_WINDOW_MS = 60_000;
+const AI_ROUTE_MAX_REQUESTS = 30;
+const aiRouteHits = new Map<string, { count: number; resetAt: number }>();
+
+function aiGenerateAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const token = process.env.PRIVATE_API_TOKEN;
+  if (!token) {
+    return res.status(503).json({
+      error: "AI generation route is disabled until PRIVATE_API_TOKEN is configured.",
+    });
+  }
+  const authHeader = req.headers.authorization;
+  const provided = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : "";
+  if (provided !== token) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+
+function aiGenerateRateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const key = `${req.ip || "unknown"}:${req.headers.authorization || ""}`;
+  const now = Date.now();
+  const hit = aiRouteHits.get(key);
+  if (!hit || hit.resetAt <= now) {
+    aiRouteHits.set(key, { count: 1, resetAt: now + AI_ROUTE_WINDOW_MS });
+    return next();
+  }
+  if (hit.count >= AI_ROUTE_MAX_REQUESTS) {
+    return res.status(429).json({
+      error: "Rate limit exceeded for /api/ai/generate. Try again shortly.",
+    });
+  }
+  hit.count += 1;
+  aiRouteHits.set(key, hit);
+  next();
+}
+
 // Lazy initializer for GoogleGenAI
 function getGeminiClient(): GoogleGenAI | null {
+  const activeProvider = getActiveProvider();
+  if (activeProvider.id !== "gemini" || !activeProvider.isConfigured()) {
+    return null;
+  }
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     console.warn("GEMINI_API_KEY is not set. Using smart heuristic responses as fallback.");
@@ -34,511 +100,223 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString(), hasGeminiKey: !!process.env.GEMINI_API_KEY });
 });
 
-// Helper: Convert title to sentence case (APA 7th rule)
-function toApaSentenceCase(title: string): string {
-  if (!title) return "";
-  const trimmed = title.trim();
-  // Split on colon or em-dash to capitalize subtitle
-  const parts = trimmed.split(/(:\s+|\s+-\s+)/);
-  return parts.map((part, index) => {
-    if (part.startsWith(":") || part.trim() === "-") return part;
-    if (part.length === 0) return part;
-    // Lowercase words except if it's already an acronym (all caps)
-    const words = part.split(/\s+/);
-    const transformed = words.map((word, wIdx) => {
-      // Clean leading/trailing punctuation for checking acronym
-      const stripped = word.replace(/^[^\w]+|[^\w]+$/g, "");
-      if (stripped.length > 1 && stripped === stripped.toUpperCase() && /^[A-Z]+$/.test(stripped)) {
-        return word; // Keep acronym e.g. APA, COVID, AI, fMRI, USA
-      }
-      if (wIdx === 0) {
-        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-      }
-      return word.toLowerCase();
-    });
-    return transformed.join(" ");
-  }).join("");
-}
-
-// Academic Endpoints for Dissertation Matrix
-app.get("/api/academic/search", async (req, res) => {
-  const query = (req.query.q as string || "").trim();
-  if (!query) {
-    return res.status(400).json({ error: "Search query 'q' parameter is required." });
-  }
-
-  try {
-    // 1. Query OpenAlex for rich academic metadata and peer-review venue confirmation
-    const openAlexUrl = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&filter=is_paratext:false&per-page=12&mailto=dissertation-matrix@academic.org`;
-    const openAlexPromise = fetch(openAlexUrl, {
-      headers: { "Accept": "application/json", "User-Agent": "DissertationMatrix/1.0" },
-      signal: AbortSignal.timeout(6500)
-    }).then(r => r.ok ? r.json() : null).catch(() => null);
-
-    // 2. Query CrossRef for official registration DOI metadata
-    const crossRefUrl = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=10&select=DOI,title,author,published-print,published-online,container-title,volume,issue,page,type,is-referenced-by-count,ISSN`;
-    const crossRefPromise = fetch(crossRefUrl, {
-      headers: { "Accept": "application/json", "User-Agent": "DissertationMatrix/1.0 (mailto:scholar@academic.org)" },
-      signal: AbortSignal.timeout(6500)
-    }).then(r => r.ok ? r.json() : null).catch(() => null);
-
-    const [openAlexData, crossRefData] = await Promise.all([openAlexPromise, crossRefPromise]);
-
-    const results: any[] = [];
-    const seenDois = new Set<string>();
-
-    // Process OpenAlex results first
-    if (openAlexData?.results && Array.isArray(openAlexData.results)) {
-      for (const item of openAlexData.results) {
-        const rawDoi = item.doi ? item.doi.replace(/^https?:\/\/doi\.org\//, "") : "";
-        if (rawDoi && seenDois.has(rawDoi.toLowerCase())) continue;
-        if (rawDoi) seenDois.add(rawDoi.toLowerCase());
-
-        const authors = (item.authorships || []).map((a: any) => {
-          const rawName = a.author?.display_name || "";
-          const nameParts = rawName.split(" ");
-          if (nameParts.length >= 2) {
-            const lastName = nameParts[nameParts.length - 1];
-            const initials = nameParts.slice(0, -1).map((n: string) => n.charAt(0).toUpperCase() + ".").join(" ");
-            return `${lastName}, ${initials}`;
-          }
-          return rawName;
-        });
-
-        const venue = item.primary_location?.source?.display_name || item.host_venue?.display_name || "";
-        const venueType = item.primary_location?.source?.type || item.type || "journal-article";
-        const isPeerReviewed = venueType === "journal" || venueType === "journal-article" || item.type === "article";
-        const pubYear = item.publication_year || (item.publication_date ? parseInt(item.publication_date.split("-")[0]) : new Date().getFullYear());
-
-        results.push({
-          id: item.id || `oa-${Math.random().toString(36).substring(2, 9)}`,
-          title: item.title || "Untitled Scholarly Work",
-          titleSentenceCase: toApaSentenceCase(item.title || ""),
-          authors: authors.length > 0 ? authors : ["Unknown Author"],
-          year: pubYear,
-          journal: venue || "Scholarly Publication",
-          volume: item.biblio?.volume || "",
-          issue: item.biblio?.issue || "",
-          pages: item.biblio?.first_page && item.biblio?.last_page ? `${item.biblio.first_page}–${item.biblio.last_page}` : (item.biblio?.first_page || ""),
-          doi: rawDoi ? `https://doi.org/${rawDoi}` : "",
-          rawDoi: rawDoi,
-          abstract: item.abstract_inverted_index ? reconstructAbstract(item.abstract_inverted_index) : (item.abstract || ""),
-          isPeerReviewed: isPeerReviewed,
-          peerReviewConfidence: isPeerReviewed ? (item.primary_location?.source?.issn_l ? 98 : 90) : 65,
-          venueType: venueType,
-          issn: item.primary_location?.source?.issn_l || (item.primary_location?.source?.issn ? item.primary_location.source.issn[0] : ""),
-          citationCount: item.cited_by_count || 0,
-          isOpenAccess: !!item.open_access?.is_oa,
-          openAccessPdf: item.open_access?.oa_url || "",
-          publisher: item.primary_location?.source?.host_organization_name || "",
-          sourceProvider: "OpenAlex"
-        });
-      }
-    }
-
-    // Complement with CrossRef
-    if (crossRefData?.message?.items && Array.isArray(crossRefData.message.items)) {
-      for (const item of crossRefData.message.items) {
-        const rawDoi = item.DOI || "";
-        if (rawDoi && seenDois.has(rawDoi.toLowerCase())) continue;
-        if (rawDoi) seenDois.add(rawDoi.toLowerCase());
-
-        const authors = (item.author || []).map((a: any) => {
-          if (a.family && a.given) {
-            const initials = a.given.split(" ").map((g: string) => g.charAt(0).toUpperCase() + ".").join(" ");
-            return `${a.family}, ${initials}`;
-          }
-          return a.name || `${a.family || "Author"}`;
-        });
-
-        const year = item["published-print"]?.["date-parts"]?.[0]?.[0] ||
-                     item["published-online"]?.["date-parts"]?.[0]?.[0] ||
-                     (item.created?.["date-parts"]?.[0]?.[0] ?? new Date().getFullYear());
-
-        const journal = Array.isArray(item["container-title"]) ? item["container-title"][0] : (item["container-title"] || "Academic Journal");
-        const isPeerReviewed = item.type === "journal-article" || item.type === "proceedings-article";
-
-        const rawTitle = Array.isArray(item.title) ? item.title[0] : (item.title || "Scholarly Article");
-
-        results.push({
-          id: `cr-${rawDoi || Math.random().toString(36).substring(2, 9)}`,
-          title: rawTitle,
-          titleSentenceCase: toApaSentenceCase(rawTitle),
-          authors: authors.length > 0 ? authors : ["Unknown Author"],
-          year: year,
-          journal: journal,
-          volume: item.volume || "",
-          issue: item.issue || "",
-          pages: item.page ? item.page.replace("-", "–") : "",
-          doi: rawDoi ? `https://doi.org/${rawDoi}` : "",
-          rawDoi: rawDoi,
-          abstract: item.abstract ? item.abstract.replace(/<[^>]+>/g, "").trim() : "",
-          isPeerReviewed: isPeerReviewed,
-          peerReviewConfidence: isPeerReviewed ? 95 : 60,
-          venueType: item.type || "journal-article",
-          issn: Array.isArray(item.ISSN) ? item.ISSN[0] : (item.ISSN || ""),
-          citationCount: item["is-referenced-by-count"] || 0,
-          isOpenAccess: false,
-          openAccessPdf: "",
-          publisher: item.publisher || "",
-          sourceProvider: "CrossRef"
-        });
-      }
-    }
-
-    // If both failed or yielded 0 results, provide curated academic peer-reviewed records based on the search query
-    if (results.length === 0) {
-      const fallbackArticles = getCuratedFallbackArticles(query);
-      return res.json({ success: true, count: fallbackArticles.length, results: fallbackArticles, isFallback: true });
-    }
-
-    res.json({ success: true, count: results.length, results: results.slice(0, 15) });
-  } catch (error: any) {
-    console.error("Academic search error:", error);
-    const fallbackArticles = getCuratedFallbackArticles(query);
-    res.json({ success: true, count: fallbackArticles.length, results: fallbackArticles, isFallback: true });
-  }
+// 1a. AI provider metadata (client-safe: NO keys or endpoints are ever returned).
+app.get("/api/ai/providers", (_req, res) => {
+  res.json({ providers: listProviders() });
 });
 
-// Helper: Reconstruct abstract from OpenAlex inverted index
-function reconstructAbstract(invertedIndex: Record<string, number[]>): string {
-  if (!invertedIndex || typeof invertedIndex !== "object") return "";
-  const wordsWithPos: { word: string; pos: number }[] = [];
-  for (const [word, positions] of Object.entries(invertedIndex)) {
-    for (const pos of positions) {
-      wordsWithPos.push({ word, pos });
-    }
+// 1b. Provider-agnostic generation endpoint. Degrades honestly when unconfigured — the
+// response carries `verified:false` so the client never presents fallbacks as real.
+app.post("/api/ai/generate", aiGenerateAuth, aiGenerateRateLimit, async (req, res) => {
+  const { system, prompt, model, json } = req.body || {};
+  if (!prompt || typeof prompt !== "string") {
+    return res.status(400).json({ error: "A 'prompt' string is required." });
   }
-  wordsWithPos.sort((a, b) => a.pos - b.pos);
-  return wordsWithPos.map(w => w.word).join(" ");
-}
-
-// DOI Lookup Endpoint
-app.get("/api/academic/doi", async (req, res) => {
-  const rawDoi = (req.query.doi as string || "").trim().replace(/^https?:\/\/doi\.org\//, "");
-  if (!rawDoi) {
-    return res.status(400).json({ error: "Missing 'doi' query parameter" });
+  if (prompt.length > 20_000 || (typeof system === "string" && system.length > 10_000)) {
+    return res.status(413).json({ error: "Prompt payload is too large." });
   }
-
-  try {
-    const crossRefUrl = `https://api.crossref.org/works/${encodeURIComponent(rawDoi)}`;
-    const crRes = await fetch(crossRefUrl, {
-      headers: { "Accept": "application/json", "User-Agent": "DissertationMatrix/1.0 (mailto:scholar@academic.org)" },
-      signal: AbortSignal.timeout(6000)
-    });
-
-    if (crRes.ok) {
-      const data = await crRes.json();
-      const item = data.message;
-      const authors = (item.author || []).map((a: any) => {
-        if (a.family && a.given) {
-          const initials = a.given.split(" ").map((g: string) => g.charAt(0).toUpperCase() + ".").join(" ");
-          return `${a.family}, ${initials}`;
-        }
-        return a.name || `${a.family || "Author"}`;
-      });
-
-      const year = item["published-print"]?.["date-parts"]?.[0]?.[0] ||
-                   item["published-online"]?.["date-parts"]?.[0]?.[0] ||
-                   (item.created?.["date-parts"]?.[0]?.[0] ?? new Date().getFullYear());
-      const journal = Array.isArray(item["container-title"]) ? item["container-title"][0] : (item["container-title"] || "");
-      const rawTitle = Array.isArray(item.title) ? item.title[0] : (item.title || "Scholarly Article");
-
-      return res.json({
-        success: true,
-        source: {
-          id: `doi-${rawDoi.replace(/[^a-zA-Z0-9]/g, "_")}`,
-          title: rawTitle,
-          titleSentenceCase: toApaSentenceCase(rawTitle),
-          authors: authors.length > 0 ? authors : ["Unknown Author"],
-          year: year,
-          journal: journal,
-          volume: item.volume || "",
-          issue: item.issue || "",
-          pages: item.page ? item.page.replace("-", "–") : "",
-          doi: `https://doi.org/${rawDoi}`,
-          rawDoi: rawDoi,
-          isPeerReviewed: item.type === "journal-article" || item.type === "proceedings-article",
-          peerReviewConfidence: item.type === "journal-article" ? 98 : 75,
-          venueType: item.type || "journal-article",
-          issn: Array.isArray(item.ISSN) ? item.ISSN[0] : (item.ISSN || ""),
-          citationCount: item["is-referenced-by-count"] || 0,
-          publisher: item.publisher || ""
-        }
-      });
-    }
-
-    res.status(404).json({ error: "DOI not found in registry" });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || "Failed to resolve DOI" });
-  }
+  const result = await aiGenerate({ system, prompt, model, json: !!json });
+  res.json(result);
 });
 
-// Peer-Review & APA 7th Validation Endpoint
-app.post("/api/academic/validate-source", (req, res) => {
-  const { title, authors, year, journal, volume, issue, pages, doi, issn, publicationType } = req.body;
+// ---------------------------------------------------------------------------
+// Notion integration (READ-ONLY). Key is server-side only; never returned to client.
+// Flow: status -> databases -> preview (schema + pages) -> [client maps & confirms] -> import
+// is performed client-side into local storage (we never write back to Notion here).
+// ---------------------------------------------------------------------------
 
-  const checks: { rule: string; passed: boolean; message: string; severity: "error" | "warning" | "pass" }[] = [];
-
-  // Check 1: Peer-review venue indicator
-  const hasAcademicJournal = !!(journal && journal.trim().length > 2);
-  const isJournalType = publicationType === "journal-article" || publicationType === "Peer-Reviewed Journal" || !publicationType;
-  if (hasAcademicJournal && isJournalType) {
-    checks.push({
-      rule: "Peer-Reviewed Scholarly Venue",
-      passed: true,
-      message: `Published in scholarly journal "${journal}". Meets dissertation peer-review criteria.`,
-      severity: "pass"
-    });
-  } else {
-    checks.push({
-      rule: "Peer-Reviewed Scholarly Venue",
-      passed: false,
-      message: "Journal or scholarly container title is missing or unverified. Dissertations require peer-reviewed provenance.",
-      severity: "error"
-    });
+// Connection status (does NOT expose the key).
+app.get("/api/notion/status", async (_req, res) => {
+  if (!isNotionConfigured()) {
+    return res.json({ configured: false, connected: false });
   }
-
-  // Check 2: Registered DOI
-  const hasDoi = !!(doi && doi.trim().startsWith("https://doi.org/10."));
-  if (hasDoi) {
-    checks.push({
-      rule: "Active HTTPS DOI Format (APA 7th Standard)",
-      passed: true,
-      message: "Direct HTTPS DOI URL present and conforms to APA 7th (https://doi.org/10.xxxx/...).",
-      severity: "pass"
-    });
-  } else if (doi && !doi.startsWith("https://doi.org/")) {
-    checks.push({
-      rule: "Active HTTPS DOI Format (APA 7th Standard)",
-      passed: false,
-      message: "DOI must be formatted as an active HTTPS hyperlink (https://doi.org/10.xxxx/...), not 'doi:' or 'dx.doi.org'.",
-      severity: "error"
-    });
-  } else {
-    checks.push({
-      rule: "Active HTTPS DOI Format (APA 7th Standard)",
-      passed: false,
-      message: "Missing DOI. Peer-reviewed journal articles in APA 7th require a DOI where available.",
-      severity: "warning"
-    });
+  const result = await notionCheckConnection();
+  if (result.ok) {
+    return res.json({ configured: true, connected: true });
   }
+  res.json({ configured: true, connected: false, error: result.error });
+});
 
-  // Check 3: Author inversion & formatting
-  const authorList = Array.isArray(authors) ? authors : (typeof authors === "string" ? [authors] : []);
-  const authorInvertedValid = authorList.length > 0 && authorList.every((a: string) => /^[A-Z][a-zA-Z\s'-]+,\s+[A-Z]\./.test(a.trim()));
-  if (authorInvertedValid) {
-    checks.push({
-      rule: "APA 7th Author Inversion",
-      passed: true,
-      message: "Authors correctly formatted as Surname, Initial(s) (e.g., 'Smith, J. A.').",
-      severity: "pass"
-    });
-  } else {
-    checks.push({
-      rule: "APA 7th Author Inversion",
-      passed: false,
-      message: "Authors must be inverted: Surname, First Initial(s). Example: 'Bandura, A.' instead of 'Albert Bandura'.",
-      severity: "warning"
-    });
+// List databases shared with the integration.
+app.get("/api/notion/databases", async (_req, res) => {
+  const result = await notionListDatabases();
+  if (result.ok) {
+    return res.json({ databases: result.data });
   }
+  res.status(result.unconfigured ? 400 : 502).json({ error: result.error });
+});
 
-  // Check 4: Title Sentence Case
-  const words = (title || "").trim().split(/\s+/);
-  const uppercaseWords = words.slice(1).filter((w: string) => {
-    const clean = w.replace(/^[^\w]+|[^\w]+$/g, "");
-    return clean.length > 1 && clean[0] === clean[0].toUpperCase() && clean !== clean.toUpperCase();
-  });
-  const isSentenceCase = uppercaseWords.length === 0;
-  if (isSentenceCase) {
-    checks.push({
-      rule: "APA 7th Article Title Sentence Case",
-      passed: true,
-      message: "Article title correctly uses sentence case (only first letter and proper nouns capitalized).",
-      severity: "pass"
-    });
-  } else {
-    checks.push({
-      rule: "APA 7th Article Title Sentence Case",
-      passed: false,
-      message: `Title appears to use Title Case instead of Sentence Case. Found capitalized words: "${uppercaseWords.slice(0, 3).join(", ")}". In APA 7th, article titles are sentence case.`,
-      severity: "warning"
-    });
+// Preview a database (schema + normalized pages) for the mapping UI.
+app.get("/api/notion/databases/:id/preview", async (req, res) => {
+  const { id } = req.params;
+  const pageSize = Number(req.query.pageSize) || 25;
+  const result = await notionPreviewDatabase(id, pageSize);
+  if (result.ok) {
+    return res.json(result.data);
   }
+  res.status(result.unconfigured ? 400 : 502).json({ error: result.error });
+});
 
-  // Check 5: Dissertation Currency / Recency (5-7 year academic benchmark)
-  const numericYear = parseInt(year);
-  const currentYear = new Date().getFullYear();
-  if (numericYear && (currentYear - numericYear <= 7)) {
-    checks.push({
-      rule: "Dissertation Currency (Within 7 Years)",
-      passed: true,
-      message: `Published in ${numericYear} (${currentYear - numericYear} years ago). Complies with literature currency expectations.`,
-      severity: "pass"
-    });
-  } else if (numericYear) {
-    checks.push({
-      rule: "Dissertation Currency (Within 7 Years)",
-      passed: false,
-      message: `Published in ${numericYear} (${currentYear - numericYear} years ago). Consider justifying as seminal/foundational literature in your Chapter 2.`,
-      severity: "warning"
-    });
-  }
+// ---------------------------------------------------------------------------
+// anam.ai avatar ("Talk to FISH"). API key stays server-side; the client only
+// receives a short-lived session token. The custom-LLM bridge grounds every reply
+// in the student's own knowledge base before the brain LLM answers.
+// ---------------------------------------------------------------------------
 
-  // Check 6: Volume, Issue & Pagination
-  if (volume && pages) {
-    checks.push({
-      rule: "Volume & Pagination Completeness",
-      passed: true,
-      message: `Complete bibliographic metadata: Vol. ${volume}${issue ? `(${issue})` : ""}, pp. ${pages}.`,
-      severity: "pass"
-    });
-  } else {
-    checks.push({
-      rule: "Volume & Pagination Completeness",
-      passed: false,
-      message: "Missing volume number or page ranges. Complete periodic metadata is required for APA 7th reference entries.",
-      severity: "warning"
-    });
-  }
-
-  const passedCount = checks.filter(c => c.passed).length;
-  const score = Math.round((passedCount / checks.length) * 100);
-
+// Avatar availability (never exposes the key).
+app.get("/api/anam/status", (_req, res) => {
   res.json({
-    success: true,
-    complianceScore: score,
-    isCompliant: score >= 80,
-    peerReviewedStatus: hasAcademicJournal ? "verified" : "unverified",
-    checks
+    configured: isAnamConfigured(),
+    // True when the key is set but avatar/voice/llm (or a personaId) are still missing.
+    needsPersonaConfig: isAnamConfigured() && anamConfigIncomplete(),
   });
 });
 
-// Curated peer-reviewed fallback articles
-function getCuratedFallbackArticles(searchQuery: string) {
-  const allArticles = [
-    {
-      id: "lit-1",
-      title: "Algorithmic amplification and epistemic bubbles: A multi-platform empirical analysis of informational homophily",
-      titleSentenceCase: "Algorithmic amplification and epistemic bubbles: A multi-platform empirical analysis of informational homophily",
-      authors: ["Bail, C. A.", "Argyle, L. P.", "Brown, T. W.", "Kalluri, N."],
-      year: 2023,
-      journal: "Journal of Communication",
-      volume: "73",
-      issue: "4",
-      pages: "341–356",
-      doi: "https://doi.org/10.1093/joc/jqad018",
-      rawDoi: "10.1093/joc/jqad018",
-      abstract: "This study provides a multi-platform empirical evaluation of algorithmic recommendation engines across 42,000 participants, demonstrating how engagement-maximizing heuristics exacerbate epistemic divergence while reinforcing affective polarization.",
-      isPeerReviewed: true,
-      peerReviewConfidence: 99,
-      venueType: "journal-article",
-      issn: "0021-9916",
-      citationCount: 148,
-      isOpenAccess: true,
-      publisher: "Oxford University Press",
-      sourceProvider: "OpenAlex (Verified Peer-Reviewed)"
-    },
-    {
-      id: "lit-2",
-      title: "Epistemic injustice in automated decision systems: Measuring procedural harms in high-stakes public sector governance",
-      titleSentenceCase: "Epistemic injustice in automated decision systems: Measuring procedural harms in high-stakes public sector governance",
-      authors: ["Benjamin, R.", "Kroll, J. A."],
-      year: 2022,
-      journal: "Big Data & Society",
-      volume: "9",
-      issue: "2",
-      pages: "1–17",
-      doi: "https://doi.org/10.1177/20539517221102945",
-      rawDoi: "10.1177/20539517221102945",
-      abstract: "We formulate an epistemological evaluation framework for algorithmic administrative decisions, detailing how testimonial injustice arises when marginalized subjects cannot challenge non-interpretable model weights.",
-      isPeerReviewed: true,
-      peerReviewConfidence: 98,
-      venueType: "journal-article",
-      issn: "2053-9517",
-      citationCount: 215,
-      isOpenAccess: true,
-      publisher: "SAGE Publications",
-      sourceProvider: "CrossRef (Verified Peer-Reviewed)"
-    },
-    {
-      id: "lit-3",
-      title: "Synthesizing qualitative literature in doctoral dissertations: Methodological rigor, thematic coding, and epistemic reflexivity",
-      titleSentenceCase: "Synthesizing qualitative literature in doctoral dissertations: Methodological rigor, thematic coding, and epistemic reflexivity",
-      authors: ["Braun, V.", "Clarke, V.", "Terry, G."],
-      year: 2021,
-      journal: "Qualitative Research in Psychology",
-      volume: "18",
-      issue: "3",
-      pages: "328–352",
-      doi: "https://doi.org/10.1080/14780887.2020.1769855",
-      rawDoi: "10.1080/14780887.2020.1769855",
-      abstract: "A critical methodological guide for doctoral scholars conducting qualitative thematic synthesis. Details matrix coding techniques, researcher positionality tracking, and audit trail construction for defensible literature review chapters.",
-      isPeerReviewed: true,
-      peerReviewConfidence: 99,
-      venueType: "journal-article",
-      issn: "1478-0887",
-      citationCount: 890,
-      isOpenAccess: false,
-      publisher: "Routledge / Taylor & Francis",
-      sourceProvider: "OpenAlex (Verified Peer-Reviewed)"
-    },
-    {
-      id: "lit-4",
-      title: "A systematic review and meta-analysis of interventions mitigating algorithmic bias in peer-review selection",
-      titleSentenceCase: "A systematic review and meta-analysis of interventions mitigating algorithmic bias in peer-review selection",
-      authors: ["Gao, L. X.", "van Dijk, M.", "Sorensen, H. P."],
-      year: 2024,
-      journal: "Nature Human Behaviour",
-      volume: "8",
-      issue: "1",
-      pages: "88–104",
-      doi: "https://doi.org/10.1038/s41562-023-01772-1",
-      rawDoi: "10.1038/s41562-023-01772-1",
-      abstract: "Analyzing 124 experimental trials across academic publishing repositories, this meta-analysis quantifies effect sizes of double-blind review and structured evaluation matrices on reducing institutional prestige bias (d = -0.34, p < 0.001).",
-      isPeerReviewed: true,
-      peerReviewConfidence: 100,
-      venueType: "journal-article",
-      issn: "2397-3374",
-      citationCount: 67,
-      isOpenAccess: true,
-      publisher: "Springer Nature",
-      sourceProvider: "CrossRef (Verified Peer-Reviewed)"
-    },
-    {
-      id: "lit-5",
-      title: "Deliberative systems in the platform age: How social media architecture constrains democratic reasoning",
-      titleSentenceCase: "Deliberative systems in the platform age: How social media architecture constrains democratic reasoning",
-      authors: ["Dryzek, J. S.", "Bächtiger, A.", "Milewicz, K."],
-      year: 2023,
-      journal: "American Political Science Review",
-      volume: "117",
-      issue: "2",
-      pages: "675–691",
-      doi: "https://doi.org/10.1017/S0003055422000898",
-      rawDoi: "10.1017/S0003055422000898",
-      abstract: "Develops an institutional framework examining how algorithmic curation structures deliberative capacity across macro-level civic spaces, identifying systematic structural barriers to epistemic diversity.",
-      isPeerReviewed: true,
-      peerReviewConfidence: 100,
-      venueType: "journal-article",
-      issn: "0003-0554",
-      citationCount: 184,
-      isOpenAccess: false,
-      publisher: "Cambridge University Press",
-      sourceProvider: "OpenAlex (Verified Peer-Reviewed)"
+// Mint a short-lived anam session token for the browser SDK.
+app.post("/api/anam/session-token", async (req, res) => {
+  const clientLabel = (req.body && req.body.clientLabel) || "fish-scholar";
+  const result = await anamCreateSessionToken(clientLabel);
+  if (result.ok) {
+    return res.json(result.data);
+  }
+  res.status(result.unconfigured ? 400 : 502).json({ error: result.error });
+});
+
+/**
+ * Custom-LLM bridge for anam (OpenAI-compatible, streaming SSE).
+ *
+ * anam (or the browser client) POSTs an OpenAI-style chat payload; we ground the latest turn
+ * in the student's knowledge base (grounding facts + records are supplied by the client in
+ * `groundingInputs`, since course data lives in the browser store), then call the configured
+ * brain provider and stream the answer back as `chat.completion.chunk` events. Ends with a
+ * `finish_reason: "stop"` chunk and `[DONE]`, per the anam custom-LLM spec.
+ */
+app.post("/api/anam/llm", async (req, res) => {
+  const messages: ChatMessage[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const groundingInputs: GroundingInputs | undefined = req.body?.groundingInputs;
+
+  // OpenAI-compatible SSE headers.
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+
+  const id = `chatcmpl-fish-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  const sendChunk = (delta: Record<string, unknown>, finish: string | null = null) => {
+    const payload = {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model: "fish-grounded",
+      choices: [{ index: 0, delta, finish_reason: finish }],
+    };
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  try {
+    let text: string;
+    if (groundingInputs) {
+      // Reconstruct Date on the server (JSON serialization drops the type).
+      const inputs: GroundingInputs = {
+        ...groundingInputs,
+        askCtx: { ...groundingInputs.askCtx, now: new Date(groundingInputs.askCtx.now as unknown as string) },
+      };
+      const grounded = composeGroundedMessages(messages, inputs);
+      const system = grounded.find((m) => m.role === "system")?.content || "";
+      const convo = grounded
+        .filter((m) => m.role !== "system")
+        .map((m) => `${m.role === "user" ? "Student" : "FISH"}: ${m.content}`)
+        .join("\n");
+      const result = await aiGenerate({ system, prompt: convo });
+      text = result.verified
+        ? result.text
+        : "I can answer from your F.I.S.H. Scholar data, but the AI voice model isn't configured yet. " +
+          (result.note || "");
+    } else {
+      text = "I didn't receive your academic context, so I can't ground an answer right now.";
     }
-  ];
 
-  const q = searchQuery.toLowerCase();
-  const matched = allArticles.filter(a =>
-    a.title.toLowerCase().includes(q) ||
-    a.authors.some(auth => auth.toLowerCase().includes(q)) ||
-    a.abstract.toLowerCase().includes(q) ||
-    a.journal.toLowerCase().includes(q)
-  );
+    sendChunk({ role: "assistant" });
+    if (text) sendChunk({ content: text });
+    sendChunk({}, "stop");
+    res.write("data: [DONE]\n\n");
+    res.end();
+  } catch (err: any) {
+    sendChunk({ role: "assistant" });
+    sendChunk({ content: "AI assistance is temporarily unavailable. Your academic records remain accessible." });
+    sendChunk({}, "stop");
+    res.write("data: [DONE]\n\n");
+    res.end();
+  }
+});
 
-  return matched.length > 0 ? matched : allArticles;
-}
+/**
+ * Text-chat companion (non-streaming JSON). Same grounding as the anam SSE bridge, but returns
+ * a single { reply, verified, note } — used by the "Talk to FISH" text fallback so grounded
+ * chat works even before the avatar/custom-LLM is configured. With no AI key, it falls back to
+ * the deterministic Ask FISH answer, so it still works with zero keys (never fabricates).
+ */
+app.post("/api/anam/chat", async (req, res) => {
+  const messages: ChatMessage[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const groundingInputs: GroundingInputs | undefined = req.body?.groundingInputs;
+  if (!groundingInputs) {
+    return res.status(400).json({ error: "Missing academic context." });
+  }
+  try {
+    const inputs: GroundingInputs = {
+      ...groundingInputs,
+      askCtx: { ...groundingInputs.askCtx, now: new Date(groundingInputs.askCtx.now as unknown as string) },
+    };
+    const grounded = composeGroundedMessages(messages, inputs);
+    const system = grounded.find((m) => m.role === "system")?.content || "";
+    const convo = grounded
+      .filter((m) => m.role !== "system")
+      .map((m) => `${m.role === "user" ? "Student" : "FISH"}: ${m.content}`)
+      .join("\n");
+    const result = await aiGenerate({ system, prompt: convo });
+
+    if (result.verified && result.text) {
+      return res.json({ reply: result.text, verified: true });
+    }
+    // No AI provider configured — answer deterministically from the student's data.
+    const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
+    const ask = answerQuestion(lastUser, inputs.askCtx);
+    return res.json({
+      reply: ask.summary,
+      verified: false,
+      note: result.note || "Answered directly from your data (no AI voice model configured).",
+    });
+  } catch (err: any) {
+    return res.status(200).json({
+      reply: "AI assistance is temporarily unavailable. Your academic records remain accessible.",
+      verified: false,
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// API key management. Returns only masked status; raw secret values are NEVER sent to the
+// client. Writes go to the server-side .env (git-ignored). Intended for a trusted local /
+// self-hosted context — do not expose this app publicly without adding auth in front.
+// ---------------------------------------------------------------------------
+app.get("/api/settings/keys", (_req, res) => {
+  res.json({ keys: getKeyStatus() });
+});
+
+app.post("/api/settings/keys", (req, res) => {
+  const { key, value } = req.body || {};
+  if (typeof key !== "string") {
+    return res.status(400).json({ error: "A 'key' is required." });
+  }
+  if (typeof value !== "string") {
+    return res.status(400).json({ error: "A string 'value' is required (may be empty to clear)." });
+  }
+  const result = setKey(key, value);
+  if (result.ok) {
+    return res.json({ ok: true, keys: result.status });
+  }
+  res.status(400).json({ error: result.error });
+});
 
 // 2. Syllabus Intelligence Extractor
 app.post("/api/gemini/extract-syllabus", async (req, res) => {
@@ -547,50 +325,27 @@ app.post("/api/gemini/extract-syllabus", async (req, res) => {
     const ai = getGeminiClient();
 
     if (!ai) {
-      // Return structured fallback
       return res.json({
-        success: true,
+        success: false,
+        verified: false,
+        note: "Syllabus extraction requires a configured Gemini provider.",
         extracted: {
           professor: {
-            name: "Dr. Catherine Bennett",
-            email: "cbennett@university.edu",
-            officeHours: "Tuesdays & Thursdays 2:00 PM - 4:00 PM EST (Zoom)",
-            preferredCommunication: "Canvas Inbox or Email (24hr response time on weekdays)"
+            name: "",
+            email: "",
+            officeHours: "",
+            preferredCommunication: "",
           },
-          gradingScale: [
-            { item: "Discussion Board & Peer Responses", percentage: 25 },
-            { item: "Case Study Analysis Papers", percentage: 30 },
-            { item: "Midterm Synthesis Project", percentage: 20 },
-            { item: "Final Applied Capstone", percentage: 25 }
-          ],
-          assignments: [
-            {
-              title: "Module 1 Initial Discussion & Peer Response",
-              dueDate: "Tonight at 11:59 PM",
-              points: 25,
-              weight: "5%",
-              description: "Analyze the core tenets of Universal Design in Educational Settings and respond to at least 2 peers."
-            },
-            {
-              title: "Literature Review on Transition Barriers",
-              dueDate: "Next Thursday at 11:59 PM",
-              points: 100,
-              weight: "15%",
-              description: "Synthesize at least 5 peer-reviewed sources discussing systemic accommodations."
-            }
-          ],
+          gradingScale: [],
+          assignments: [],
           policies: {
-            lateWork: "10% deduction per 24 hours. Accommodations with prior notice granted without penalty.",
-            attendance: "Active participation in weekly synchronous discussions or asynchronous equivalents.",
-            aiPolicy: "AI tools may be used for brainstorming and outlining with explicit citation and authorship logs. Submitting unmodified generative text violates academic integrity.",
-            accommodations: "Students registered with Student Accessibility Services receive documented modifications including 1.5x time and flexible deadlines upon request."
+            lateWork: "",
+            attendance: "",
+            aiPolicy: "",
+            accommodations: "",
           },
-          readings: [
-            "Evans, N. J., et al. (2017). Disability in Higher Education: A Social Justice Perspective.",
-            "Wong, A. (2020). Disability Visibility: First-Person Stories from the Twenty-First Century.",
-            "Burgstahler, S. (2015). Universal Design in Higher Education: From Principles to Practice."
-          ]
-        }
+          readings: [],
+        },
       });
     }
 
@@ -607,7 +362,7 @@ Extract comprehensive structured academic data in JSON. Include:
 6. milestones (array of key course dates)`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: GEMINI_MODEL,
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -680,29 +435,18 @@ app.post("/api/gemini/document-intelligence", async (req, res) => {
 
     if (!ai) {
       return res.json({
-        docType: "Journal Article / Reading",
-        suggestedCourseId: coursesList?.[0]?.id || "c1",
-        confidence: 0.94,
-        suggestedTitle: documentName || "Universal Design in Higher Ed Framework",
-        summary: "Explores inclusive pedagogical models and accommodations across higher education.",
-        extractedCitations: [
-          {
-            authors: "Burgstahler, S.",
-            year: "2021",
-            title: "Universal Design in Higher Education: Promising Practices",
-            source: "DO-IT, University of Washington",
-            doiOrUrl: "https://www.washington.edu/doit/resources/books/universal-design-higher-education",
-            apa7: "Burgstahler, S. (2021). Universal design in higher education: Promising practices. DO-IT, University of Washington.",
-            keyQuotes: [
-              "Universal design is an approach that values human diversity and designs environments to be accessible to everyone from the start."
-            ]
-          }
-        ],
-        tags: ["Universal Design", "Accessibility", "Pedagogy", "Accommodations"]
+        verified: false,
+        confidence: 0,
+        suggestedCourseId: coursesList?.[0]?.id || "",
+        suggestedTitle: documentName || "",
+        summary: "",
+        extractedCitations: [],
+        tags: [],
+        note: "Document intelligence requires a configured Gemini provider.",
       });
     }
 
-    const prompt = `You are the Document Intelligence engine for TrueSelf Scholar.
+    const prompt = `You are the Document Intelligence engine for F.I.S.H. Scholar.
 Analyze this uploaded academic document:
 Document Name: "${documentName}"
 Content / Snippet:
@@ -721,7 +465,7 @@ Determine:
 6. tags (array of 3-6 relevant academic keywords)`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: GEMINI_MODEL,
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -742,116 +486,48 @@ app.post("/api/gemini/extract-citation-pdf", async (req, res) => {
     const { pdfBase64, fileName, textSnippet, institutionOrigin } = req.body;
     const ai = getGeminiClient();
 
-    // Heuristic fallbacks for scholarly references when Gemini is unavailable or for demo PDFs
-    const lowerName = (fileName || "").toLowerCase();
-    const getFallbackCitation = () => {
-      if (lowerName.includes("burgstahler") || lowerName.includes("universal") || lowerName.includes("udl")) {
-        return {
-          authors: "Burgstahler, S.",
-          year: "2021",
-          title: "Universal Design in Higher Education: Promising Practices and Pedagogical Frameworks",
-          source: "Journal of Postsecondary Education and Disability, 34(2), 115-128",
-          doiOrUrl: "https://doi.org/10.1080/08856257.2021.1987654",
-          apa7: "Burgstahler, S. (2021). Universal design in higher education: Promising practices and pedagogical frameworks. Journal of Postsecondary Education and Disability, 34(2), 115–128. https://doi.org/10.1080/08856257.2021.1987654",
-          inText: "(Burgstahler, 2021)",
-          notes: "Explores scalable institutional adoption of proactive Universal Design for Learning (UDL) to reduce post-hoc accommodation friction.",
-          keyQuotes: [
-            "Universal design values neurodivergent learners not as an edge-case requiring exception, but as central participants shaping instructional architecture.",
-            "Proactive accessibility planning dramatically decreases the administrative barrier for both students and disability resource offices."
-          ],
-          keywords: ["Universal Design", "Accessibility", "Higher Education", "UDL Pedagogy", "Accommodations"],
-          institutionOrigin: institutionOrigin || "Universal"
-        };
-      } else if (lowerName.includes("evans") || lowerName.includes("social justice") || lowerName.includes("disability")) {
-        return {
-          authors: "Evans, N. J., Broido, E. M., Brown, K. R., & Wilke, A. K.",
-          year: "2017",
-          title: "Disability in Higher Education: A Social Justice Perspective",
-          source: "Jossey-Bass / John Wiley & Sons",
-          doiOrUrl: "https://doi.org/10.1002/9781118015506",
-          apa7: "Evans, N. J., Broido, E. M., Brown, K. R., & Wilke, A. K. (2017). Disability in higher education: A social justice perspective. Jossey-Bass.",
-          inText: "(Evans et al., 2017)",
-          notes: "Foundational critical disability theory text examining the systemic gatekeeping inherent in university medicalized documentation requirements.",
-          keyQuotes: [
-            "Higher education environments are historically constructed under assumptions of non-disabled bodyminds, forcing students into repetitive vulnerability to prove eligibility for basic instruction.",
-            "A social justice approach centers interdependence and removes the burden of disclosure from the individual."
-          ],
-          keywords: ["Social Model of Disability", "Higher Education", "Ableism", "Self-Advocacy", "Institutional Policy"],
-          institutionOrigin: institutionOrigin || "CUNY SPS"
-        };
-      } else if (lowerName.includes("madaus") || lowerName.includes("transition") || lowerName.includes("barrier")) {
-        return {
-          authors: "Madaus, J. W., Gelbar, N. W., Faggella-Luby, M., & Dukes, L. L.",
-          year: "2021",
-          title: "Experiences of College Students with Disabilities During Educational Transitions: A Mixed-Methods Study",
-          source: "Journal of Diversity in Higher Education, 14(4), 512–523",
-          doiOrUrl: "https://doi.org/10.1037/dhe0000215",
-          apa7: "Madaus, J. W., Gelbar, N. W., Faggella-Luby, M., & Dukes, L. L. (2021). Experiences of college students with disabilities during educational transitions: A mixed-methods study. Journal of Diversity in Higher Education, 14(4), 512–523. https://doi.org/10.1037/dhe0000215",
-          inText: "(Madaus et al., 2021)",
-          notes: "Empirical transition pipeline analysis revealing how lack of standardized accommodation transfer mechanisms across universities creates cognitive and academic attrition.",
-          keyQuotes: [
-            "Students transferring between postsecondary institutions encounter disjointed accommodation verification systems, resulting in lost instructional time during crucial initial semesters.",
-            "Unified digital accommodation records can increase retention and GPA stability for neurodivergent graduate scholars."
-          ],
-          keywords: ["Transition Barriers", "Empirical Research", "Retention", "Disability Resource Center", "Postsecondary"],
-          institutionOrigin: institutionOrigin || "University of Florida"
-        };
-      } else if (lowerName.includes("hughes") || lowerName.includes("neurodiversity") || lowerName.includes("adhd")) {
-        return {
-          authors: "Hughes, C. E., & Smith, T. R.",
-          year: "2023",
-          title: "Executive Function Supports and Neurodivergent Graduate Scholarship in Asynchronous Environments",
-          source: "American Journal of Distance Education, 37(3), 188–204",
-          doiOrUrl: "https://doi.org/10.1080/08923647.2023.2188401",
-          apa7: "Hughes, C. E., & Smith, T. R. (2023). Executive function supports and neurodivergent graduate scholarship in asynchronous environments. American Journal of Distance Education, 37(3), 188–204. https://doi.org/10.1080/08923647.2023.2188401",
-          inText: "(Hughes & Smith, 2023)",
-          notes: "Investigates how structured sprint timers, sensory audio isolation, and modular rubric breakdown mitigate ADHD task paralysis in graduate research.",
-          keyQuotes: [
-            "ADHD task paralysis in graduate writing is rarely a deficit of comprehension; rather, it is a bottleneck in executive activation caused by ambiguous multi-step prompts.",
-            "Chunked milestones and transparent rubrics allow neurodivergent researchers to sustain deep flow states."
-          ],
-          keywords: ["Executive Function", "ADHD Scholarship", "Task Activation", "Asynchronous Learning", "Graduate Research"],
-          institutionOrigin: institutionOrigin || "Mississippi State"
-        };
-      }
-
-      // Generic smart parser from filename
-      const cleanTitle = (fileName || "Academic Research Paper")
+    // Academic-integrity rule (see .kiro/steering/academic-integrity.md): when no AI is
+    // configured we must NOT invent authors, DOIs, quotations, or sources. We return only a
+    // title *guess* derived from the filename, leave bibliographic fields blank, and mark the
+    // record `verified: false` with an explicit note so the UI never presents it as real.
+    const getUnverifiedCitationFromFilename = () => {
+      const cleanTitle = (fileName || "Untitled document")
         .replace(/\.pdf$/i, "")
         .replace(/[_-]+/g, " ")
         .trim();
-
       return {
-        authors: "Scholarly Research Group",
-        year: "2024",
+        authors: "",
+        year: "",
         title: cleanTitle,
-        source: "Peer-Reviewed Academic Press",
-        doiOrUrl: "https://doi.org/10.1000/182",
-        apa7: `Scholarly Research Group. (2024). ${cleanTitle}. Peer-Reviewed Academic Press. https://doi.org/10.1000/182`,
-        inText: "(Scholarly Research Group, 2024)",
-        notes: `Extracted academic paper analyzing "${cleanTitle}" with rigorous empirical and theoretical grounding.`,
-        keyQuotes: [
-          `Key finding: Systematic analysis confirms the critical significance of structured methodologies in ${cleanTitle.toLowerCase()}.`
-        ],
-        keywords: ["Scholarly Research", "Empirical Study", "Peer-Reviewed", "Methodology"],
-        institutionOrigin: institutionOrigin || "Universal"
+        source: "",
+        doiOrUrl: "",
+        apa7: "",
+        inText: "",
+        notes:
+          "Unverified: AI extraction is not configured, so no citation metadata could be read from this file. Only the title was guessed from the filename — please fill in and verify the details.",
+        keyQuotes: [] as string[],
+        keywords: [] as string[],
+        institutionOrigin: institutionOrigin || "",
+        verified: false,
       };
     };
 
     if (!ai) {
-      const fallbackCitation = getFallbackCitation();
+      const unverified = getUnverifiedCitationFromFilename();
       return res.json({
         success: true,
+        verified: false,
+        note: "Citation extraction requires an AI provider. Returned an unverified placeholder from the filename only.",
         citation: {
           id: `cit-pdf-${Date.now()}`,
-          ...fallbackCitation,
+          ...unverified,
           coursesUsed: [],
           papersCitedIn: []
         }
       });
     }
 
-    const systemInstruction = `You are an expert Academic Bibliographic Librarian and APA 7th Edition Formatting Specialist for TrueSelf Scholar.
+    const systemInstruction = `You are an expert Academic Bibliographic Librarian and APA 7th Edition Formatting Specialist for F.I.S.H. Scholar.
 Your task is to analyze the provided academic PDF / research paper and extract rigorous, flawless bibliographic metadata according to official APA 7th Edition guidelines.
 
 Extract:
@@ -886,7 +562,7 @@ Extract:
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: GEMINI_MODEL,
       contents,
       config: {
         systemInstruction,
@@ -919,52 +595,58 @@ Extract:
 
     const parsed = JSON.parse(response.text || "{}");
 
+    // Only surface fields the model actually returned. Never backfill authors/year/DOI/apa7
+    // with invented placeholders (academic-integrity steering). Blank = "not found".
     const citationResult = {
       id: `cit-pdf-${Date.now()}`,
-      authors: parsed.authors || "Extracted Author",
-      year: parsed.year || "2024",
-      title: parsed.title || fileName?.replace(/\.pdf$/i, "") || "Extracted Academic Article",
-      source: parsed.source || "Academic Journal",
+      authors: parsed.authors || "",
+      year: parsed.year || "",
+      title: parsed.title || fileName?.replace(/\.pdf$/i, "") || "",
+      source: parsed.source || "",
       doiOrUrl: parsed.doiOrUrl || "",
-      apa7: parsed.apa7 || `${parsed.authors || "Author"} (${parsed.year || "2024"}). ${parsed.title || "Title"}. ${parsed.source || "Source"}.`,
-      inText: parsed.inText || `(${parsed.authors?.split(",")?.[0]?.trim() || "Author"}, ${parsed.year || "2024"})`,
-      notes: parsed.notes || "Extracted from academic PDF upload.",
+      apa7: parsed.apa7 || "",
+      inText: parsed.inText || "",
+      notes: parsed.notes || "",
       keyQuotes: Array.isArray(parsed.keyQuotes) ? parsed.keyQuotes : [],
-      keywords: Array.isArray(parsed.keywords) && parsed.keywords.length > 0 ? parsed.keywords : ["Academic Paper", "PDF Extracted"],
+      keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
       coursesUsed: [],
       papersCitedIn: [],
-      institutionOrigin: parsed.suggestedInstitutionOrigin || institutionOrigin || "Universal"
+      institutionOrigin: parsed.suggestedInstitutionOrigin || institutionOrigin || "",
+      // AI-extracted metadata is a starting point, not confirmed. The student verifies it.
+      verified: false
     };
 
     return res.json({
       success: true,
+      verified: false,
+      note: "AI-extracted citation — please verify the authors, year, DOI, and quotations before citing.",
       citation: citationResult
     });
   } catch (error: any) {
     console.error("PDF citation extraction error:", error);
-    // Return robust fallback rather than failing
+    // Honest failure: return only a filename-derived title, clearly unverified. Never fabricate.
     const fallbackCitation = {
       id: `cit-pdf-${Date.now()}`,
-      authors: "Scholarly Research Author",
-      year: "2024",
-      title: req.body.fileName?.replace(/\.pdf$/i, "") || "Extracted Academic Publication",
-      source: "Peer-Reviewed Academic Repository",
-      doiOrUrl: "https://doi.org/10.1080/extracted",
-      apa7: `Scholarly Research Author. (2024). ${req.body.fileName?.replace(/\.pdf$/i, "") || "Extracted Academic Publication"}. Peer-Reviewed Academic Repository. https://doi.org/10.1080/extracted`,
-      inText: "(Scholarly Research Author, 2024)",
-      notes: "Extracted bibliographic metadata from uploaded academic PDF.",
-      keyQuotes: [
-        "Universal accessibility requires structural commitment to clear pedagogical scaffolding and transparent evaluation rubrics."
-      ],
-      keywords: ["PDF Import", "Universal Design", "Higher Education", "Peer-Reviewed"],
+      authors: "",
+      year: "",
+      title: req.body.fileName?.replace(/\.pdf$/i, "") || "",
+      source: "",
+      doiOrUrl: "",
+      apa7: "",
+      inText: "",
+      notes: "Unverified: citation extraction failed, so no bibliographic metadata was read. Please enter and verify the details.",
+      keyQuotes: [] as string[],
+      keywords: [] as string[],
       coursesUsed: [],
       papersCitedIn: [],
-      institutionOrigin: req.body.institutionOrigin || "Universal"
+      institutionOrigin: req.body.institutionOrigin || "",
+      verified: false
     };
     return res.json({
       success: true,
+      verified: false,
       citation: fallbackCitation,
-      note: "Generated using heuristic bibliographic parser"
+      note: "Citation extraction was unavailable. Returned an unverified placeholder — no metadata was fabricated."
     });
   }
 });
@@ -1127,7 +809,7 @@ app.post("/api/gemini/categorize-citations", async (req, res) => {
       quotes: c.keyQuotes
     }));
 
-    const systemInstruction = `You are the Lead Academic Bibliographer and Cross-Curricular Research Advisor for TrueSelf Scholar.
+    const systemInstruction = `You are the Lead Academic Bibliographer and Cross-Curricular Research Advisor for F.I.S.H. Scholar.
 Your task is to analyze academic citations in the student's Citation Vault and categorize them with deep pedagogical intelligence against their current multi-university enrolled courses.
 
 Taxonomy of Thematic Categories (Pick the most precise match):
@@ -1163,7 +845,7 @@ ${JSON.stringify(citationsSummary, null, 2)}
 Provide intelligent, structured categorization and course alignment for every citation in the list.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: GEMINI_MODEL,
       contents: prompt,
       config: {
         systemInstruction,
@@ -1246,7 +928,7 @@ Provide intelligent, structured categorization and course alignment for every ci
       success: true,
       categorizedCitations: updatedFullList,
       updatedCount: targets.length,
-      engine: "gemini-3.7-flash"
+      engine: GEMINI_MODEL
     });
   } catch (error: any) {
     console.error("Citation categorization error:", error);
@@ -1284,54 +966,14 @@ app.post("/api/gemini/writing-coach", async (req, res) => {
     const ai = getGeminiClient();
 
     if (!ai) {
-      if (action === "deconstruct_prompt") {
-        return res.json({
-          result: {
-            coreQuestion: "How do institutional policies mediate transition barriers for neurodivergent students in graduate programs?",
-            keyRequirements: [
-              "Define transition barriers using at least 3 peer-reviewed sources.",
-              "Critique existing ADA Title II compliance models vs Universal Design.",
-              "Propose an actionable institutional accommodation framework.",
-              "Maintain strict APA 7 citation format."
-            ],
-            suggestedSections: [
-              { heading: "I. Introduction & Theoretical Lens", targetWordCount: 300, focus: "Frame neurodiversity and higher education retention." },
-              { heading: "II. Literature Review: Transition Barriers", targetWordCount: 750, focus: "Synthesize Wong (2020) and Evans et al. (2017)." },
-              { heading: "III. Critical Policy Analysis", targetWordCount: 650, focus: "Compare deficit-model accommodations with proactive UDL." },
-              { heading: "IV. Proposed Framework & Conclusion", targetWordCount: 500, focus: "Actionable recommendations for disability services." }
-            ],
-            estimatedHours: 4.5
-          }
-        });
-      }
-
-      if (action === "check_rubric") {
-        return res.json({
-          result: {
-            scoreEstimate: "92 / 100",
-            strengthPoints: [
-              "Strong integration of student voice and primary literature.",
-              "Logical progression from problem definition to policy critique."
-            ],
-            gapPoints: [
-              "Rubric Criterion 3 calls for specific mention of institutional budget impacts.",
-              "Ensure in-text citations for secondary data points in paragraph 4."
-            ],
-            rubricMatches: [
-              { criterion: "Depth of Analysis", status: "Exceeds Expectations", note: "Thorough synthesis of theoretical lenses." },
-              { criterion: "Scholarly Sources (min 5)", status: "Meets Expectations", note: "6 peer-reviewed citations detected." },
-              { criterion: "APA 7 Mechanics", status: "Minor Correction Needed", note: "Check et al. comma placement in paragraph 2." }
-            ]
-          }
-        });
-      }
-
       return res.json({
-        result: "Draft review complete. Authentic voice is preserved with clear scholarly rigor."
+        verified: false,
+        result: null,
+        note: "Writing coach is unavailable because Gemini is not configured.",
       });
     }
 
-    let systemInstruction = "You are the TrueSelf Academic Writing Coach. Your goal is to preserve authentic student voice, strengthen reasoning, and maintain scholarly rigor without replacing the student's authentic authorship.";
+    let systemInstruction = "You are the F.I.S.H. Scholar Academic Writing Coach. Your goal is to preserve authentic student voice, strengthen reasoning, and maintain scholarly rigor without replacing the student's authentic authorship.";
     let userPrompt = "";
 
     if (action === "deconstruct_prompt") {
@@ -1382,7 +1024,7 @@ ${voiceNotes || "Scholarly, clear, authentic, evidence-grounded"}`;
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: GEMINI_MODEL,
       contents: userPrompt,
       config: {
         systemInstruction,
@@ -1406,27 +1048,10 @@ app.post("/api/gemini/voice-analysis", async (req, res) => {
 
     if (!ai) {
       return res.json({
-        voiceMatchScore: 88,
-        voiceAnalysis: {
-          tone: "Analytical and authentically empirical with strong personal engagement.",
-          cadence: "Varied sentence structures (14-26 words average), natural transitions.",
-          highlightedSentences: [
-            {
-              text: "Furthermore, it is pivotal to recognize that institutional paradigms significantly dictate student outcomes.",
-              status: "suspected_ai_drift",
-              reason: "Formulaic transition ('Furthermore, it is pivotal') and passive nominalization."
-            },
-            {
-              text: "When comparing the CUNY accommodation pipeline with UF's transition protocols, the administrative friction becomes evident.",
-              status: "authentic_voice",
-              reason: "Specific, contextualized argument with active scholarly voice."
-            }
-          ],
-          suggestions: [
-            "Replace generic transitions ('delve into', 'pivotal') with direct analytical verbs ('examines', 'demonstrates').",
-            "Keep the grounded first-hand analytical perspectives that characterize your prior essays."
-          ]
-        }
+        verified: false,
+        voiceMatchScore: null,
+        voiceAnalysis: null,
+        note: "Voice analysis is unavailable because Gemini is not configured.",
       });
     }
 
@@ -1454,7 +1079,7 @@ Return JSON with:
   }`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: GEMINI_MODEL,
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -1477,38 +1102,15 @@ app.post("/api/gemini/academic-memory", async (req, res) => {
 
     if (!ai) {
       return res.json({
-        relevanceSummary: "Discovered 4 interconnected sources and 2 prior discussion reflections across CUNY SPS and University of Florida relevant to your Mississippi State assignment.",
-        connectedNodes: [
-          {
-            title: "Universal Design in Higher Education (Burgstahler)",
-            origin: "CUNY SPS — DSAB 629",
-            relationType: "Foundational Theory",
-            relevanceScore: 96,
-            snippet: "Proactive accommodation frameworks eliminate retrofitted stigma.",
-            citationApa: "Burgstahler, S. (2015). Universal Design in Higher Education. Harvard Education Press."
-          },
-          {
-            title: "Disability Identity & Student Voice Discussion Post",
-            origin: "CUNY SPS — DSAB 629 (Fall 2025)",
-            relationType: "Prior Student Work",
-            relevanceScore: 92,
-            snippet: "Synthesized Wong's anthology with institutional accommodation letters.",
-            citationApa: "Fishon, E. (2025). Student Agency and Access Protocols. CUNY SPS Archive."
-          },
-          {
-            title: "Youth Transition Barriers Field Notes",
-            origin: "University of Florida — FYC Project",
-            relationType: "Empirical Case Study",
-            relevanceScore: 87,
-            snippet: "Documented the handoff gaps between high school IEPs and university SAS offices.",
-            citationApa: "UF Research Collaborative (2025). Transition Barriers in Higher Ed."
-          }
-        ],
-        synthesisRecommendation: "Combine your CUNY theoretical foundation on Universal Design with the empirical barrier data from your UF research note to anchor your Mississippi State ED 9413 response."
+        verified: false,
+        relevanceSummary: "",
+        connectedNodes: [],
+        synthesisRecommendation: "",
+        note: "Academic memory search is unavailable because Gemini is not configured.",
       });
     }
 
-    const prompt = `You are the Academic Memory Knowledge Graph Engine for TrueSelf Scholar.
+    const prompt = `You are the Academic Memory Knowledge Graph Engine for F.I.S.H. Scholar.
 The student is working on: "${currentAssignmentTitle || "Course Assignment"}" (Course ID: ${currentCourseId || "current"}).
 User query or context: "${query || "Find relevant prior sources and notes across my other colleges"}"
 
@@ -1522,7 +1124,7 @@ Return JSON with:
 - synthesisRecommendation: string`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: GEMINI_MODEL,
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -1544,8 +1146,8 @@ app.post("/api/gemini/companion-chat", async (req, res) => {
     const ai = getGeminiClient();
 
     const roleSystemInstructions: Record<string, string> = {
-      study_coach: "You are the Study Coach in TrueSelf Scholar. You are supportive, calm, ADHD-aware, action-oriented, and direct. Break overwhelm down into immediate 5-minute single micro-steps.",
-      research_librarian: "You are the Academic Research Librarian in TrueSelf Scholar. You specialize in retrieving cross-course citations, DOIs, peer-reviewed literature, and organizing master reference libraries in APA 7.",
+      study_coach: "You are the Study Coach in F.I.S.H. Scholar. You are supportive, calm, ADHD-aware, action-oriented, and direct. Break overwhelm down into immediate 5-minute single micro-steps.",
+      research_librarian: "You are the Academic Research Librarian in F.I.S.H. Scholar. You specialize in retrieving cross-course citations, DOIs, peer-reviewed literature, and organizing master reference libraries in APA 7.",
       apa_coach: "You are the APA 7 Formatting Coach. You check in-text citations, reference lists, block quotes, headings, and DOI formatting with meticulous academic precision.",
       assignment_coach: "You are the Assignment Coach. You unpack dense assignment prompts, clarify grading rubrics, establish logical milestone schedules, and answer questions about professor expectations.",
       access_coach: "You are the Accessibility & Accommodation Coach. You assist the student with understanding accommodations, writing self-advocacy emails to professors, and negotiating flexible deadlines with calm confidence.",
@@ -1555,23 +1157,16 @@ app.post("/api/gemini/companion-chat", async (req, res) => {
     const systemInstruction = roleSystemInstructions[role] || roleSystemInstructions.study_coach;
 
     if (!ai) {
-      const fallbackResponses: Record<string, string> = {
-        study_coach: "You have 3 items on deck today. Let's take the Mississippi State ED 9413 peer response first — it only takes about 20 minutes. Would you like to do a quick 20-minute focus session right now?",
-        research_librarian: "I found 3 relevant citations in your master vault on Universal Design and Transition Barriers from your CUNY SPS coursework that directly support your current paper.",
-        apa_coach: "For 3 or more authors in APA 7th edition, use '(Evans et al., 2017)' on the very first mention in-text. In the References list, list all authors up to 20.",
-        assignment_coach: "Looking at the ED 9413 prompt, Dr. Bennett is asking for a 350-word synthesis of peer-reviewed articles on Universal Design. You can easily ground this in the Burgstahler (2015) reading.",
-        access_coach: "Here is a clean draft email for Dr. Bennett requesting your documented 48-hour flexible assignment window for ED 9413 under your registered SAS accommodation.",
-        body_double: "I'm right here with you. Take a breath, pick the first paragraph, and let's write for 15 minutes. No perfectionism needed."
-      };
-
       return res.json({
-        reply: fallbackResponses[role] || fallbackResponses.study_coach,
-        role
+        verified: false,
+        reply:
+          "AI companion is unavailable because Gemini is not configured. Your saved coursework remains available.",
+        role,
       });
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: GEMINI_MODEL,
       contents: `Student message: "${message}"\nContext: ${JSON.stringify(currentContext || {})}`,
       config: {
         systemInstruction,
@@ -1640,15 +1235,10 @@ app.get(["/auth/github/callback", "/auth/github/callback/", "/auth/callback", "/
     const clientSecret = process.env.GITHUB_CLIENT_SECRET || process.env.CLIENT_SECRET;
     const redirectUri = getGitHubRedirectUri(req);
 
-    let accessToken = "demo_github_access_token";
-    let userData: any = {
-      login: "ericfishon",
-      name: "Eric Fishon",
-      avatar_url: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-      html_url: "https://github.com/ericfishon",
-      bio: "F.I.S.H. Scholar & Graduate Accessibility Researcher",
-      public_repos: 14
-    };
+    // Do not fabricate/impersonate a GitHub identity (security steering). Real profile data
+    // is only populated after a genuine OAuth exchange below.
+    let accessToken = "";
+    let userData: any = null;
 
     if (code && clientId && clientSecret) {
       const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
@@ -1682,10 +1272,41 @@ app.get(["/auth/github/callback", "/auth/github/callback/", "/auth/callback", "/
           activeGitHubProfile = userData;
         }
       }
-    } else {
-      activeGitHubToken = accessToken;
-      activeGitHubProfile = userData;
     }
+
+    // If we never obtained a real user (GitHub OAuth not configured), tell the truth instead
+    // of showing a fake "connected" screen with an invented identity.
+    if (!userData || !accessToken) {
+      return res.send(`
+      <!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <meta charset="UTF-8" />
+          <title>GitHub not connected — F.I.S.H. Scholar</title>
+        </head>
+        <body style="font-family: -apple-system, sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; background:#fdfdfd; color:#171717;">
+          <div style="max-width:380px; text-align:center; border:1px solid #e5e5e5; border-radius:16px; padding:32px; background:#fff;">
+            <h2 style="font-size:18px; margin:0 0 8px;">GitHub isn't connected</h2>
+            <p style="font-size:13px; color:#737373;">
+              GitHub OAuth isn't configured on the server yet. Add GITHUB_CLIENT_ID and
+              GITHUB_CLIENT_SECRET to connect your real account. Your F.I.S.H. Scholar data is safe.
+            </p>
+          </div>
+          <script>
+            try {
+              if (window.opener) {
+                window.opener.postMessage({ type: 'OAUTH_AUTH_UNAVAILABLE', provider: 'github' }, '*');
+                setTimeout(() => window.close(), 1500);
+              } else {
+                setTimeout(() => { window.location.href = '/'; }, 1800);
+              }
+            } catch (e) { console.error(e); }
+          </script>
+        </body>
+      </html>`);
+    }
+
+    activeGitHubProfile = userData;
 
     res.send(`
       <!DOCTYPE html>
@@ -1731,7 +1352,7 @@ app.get(["/auth/github/callback", "/auth/github/callback/", "/auth/callback", "/
           <div class="card">
             <h2>GitHub Connected Successfully!</h2>
             <p>Your academic repositories and code vaults are now connected to F.I.S.H. Scholar.</p>
-            <div class="badge">Authenticated as @${userData.login || 'ericfishon'}</div>
+            <div class="badge">Authenticated as @${userData.login}</div>
           </div>
           <script>
             try {
@@ -1775,16 +1396,17 @@ app.get("/api/github/status", (req, res) => {
     });
   }
 
+  // Only report connected with a real, fetched profile — never an invented identity.
+  if (!activeGitHubProfile) {
+    return res.json({
+      connected: false,
+      configured: !!(process.env.GITHUB_CLIENT_ID || process.env.CLIENT_ID)
+    });
+  }
+
   return res.json({
     connected: true,
-    user: activeGitHubProfile || {
-      login: "ericfishon",
-      name: "Eric Fishon",
-      avatar_url: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-      html_url: "https://github.com/ericfishon",
-      bio: "F.I.S.H. Scholar & Graduate Accessibility Researcher",
-      public_repos: 14
-    },
+    user: activeGitHubProfile,
     configured: !!(process.env.GITHUB_CLIENT_ID || process.env.CLIENT_ID)
   });
 });
@@ -1795,7 +1417,7 @@ app.get("/api/github/repos", async (req, res) => {
     const authHeader = req.headers.authorization;
     const token = (authHeader && authHeader.replace("Bearer ", "")) || activeGitHubToken;
 
-    if (token && token !== "demo_github_access_token") {
+    if (token) {
       const ghRes = await fetch("https://api.github.com/user/repos?sort=updated&per_page=15", {
         headers: {
           "Authorization": `Bearer ${token}`,
@@ -1808,55 +1430,12 @@ app.get("/api/github/repos", async (req, res) => {
       }
     }
 
-    // Default academic repositories list
+    // Not connected: return an honest empty list rather than inventing repositories.
     return res.json({
       success: true,
-      repos: [
-        {
-          id: 101,
-          name: "fish-scholar-papers",
-          full_name: "ericfishon/fish-scholar-papers",
-          description: "Curated research papers, literature syntheses, and Universal Design frameworks.",
-          private: false,
-          html_url: "https://github.com/ericfishon/fish-scholar-papers",
-          language: "Markdown / LaTeX",
-          stargazers_count: 5,
-          updated_at: new Date().toISOString()
-        },
-        {
-          id: 102,
-          name: "msu-ed9413-curriculum",
-          full_name: "ericfishon/msu-ed9413-curriculum",
-          description: "Mississippi State University ED 9413 assignments, rubric notes, and capstone proposal.",
-          private: true,
-          html_url: "https://github.com/ericfishon/msu-ed9413-curriculum",
-          language: "TeX",
-          stargazers_count: 2,
-          updated_at: new Date(Date.now() - 3600000 * 2).toISOString()
-        },
-        {
-          id: 103,
-          name: "cuny-disability-studies-vault",
-          full_name: "ericfishon/cuny-disability-studies-vault",
-          description: "CUNY SPS Master's research artifacts, primary literature notes, and APA 7 citation graph.",
-          private: false,
-          html_url: "https://github.com/ericfishon/cuny-disability-studies-vault",
-          language: "BibTeX",
-          stargazers_count: 8,
-          updated_at: new Date(Date.now() - 86400000).toISOString()
-        },
-        {
-          id: 104,
-          name: "uf-transition-barriers-empirical",
-          full_name: "ericfishon/uf-transition-barriers-empirical",
-          description: "University of Florida empirical research dataset & transition protocols analysis.",
-          private: true,
-          html_url: "https://github.com/ericfishon/uf-transition-barriers-empirical",
-          language: "Python / Jupyter",
-          stargazers_count: 3,
-          updated_at: new Date(Date.now() - 86400000 * 3).toISOString()
-        }
-      ]
+      connected: false,
+      repos: [],
+      note: "Connect GitHub to list your repositories."
     });
   } catch (error: any) {
     console.error("Error fetching repos:", error);
@@ -1894,109 +1473,497 @@ app.post("/api/github/disconnect", (_req, res) => {
   res.json({ success: true, message: "Disconnected GitHub account" });
 });
 
+// Vite Middleware for Dev and Static Serving for Production
+
 // ==========================================
-// 8. ANAM.AI AVATAR & SCHOLAR SYNTHESIS APIs
+// Endpoints preserved from main (union merge)
 // ==========================================
 
-// Check Anam API status
-app.get("/api/anam/status", (_req, res) => {
-  const hasKey = !!process.env.ANAM_AI_API_KEY;
-  const personaId = process.env.ANAM_PERSONA_ID || null;
-  res.json({
-    configured: hasKey,
-    hasPersonaId: !!personaId,
-    personaId: personaId,
-    message: hasKey
-      ? `Anam.ai API Key configured.${personaId ? ` Persona ID (${personaId.slice(0, 8)}...) active.` : ''} Real-time WebRTC avatar streaming ready.`
-      : "ANAM_AI_API_KEY is not set in environment. Running in adaptive interactive audio-avatar mode."
-  });
-});
+app.get("/api/academic/search", async (req, res) => {
+  const query = (req.query.q as string || "").trim();
+  if (!query) {
+    return res.status(400).json({ error: "Search query 'q' parameter is required." });
+  }
 
-// Generate Anam.ai Session Token for Client WebRTC Streaming
-app.post("/api/anam/session-token", async (req, res) => {
   try {
-    const apiKey = process.env.ANAM_AI_API_KEY;
-    const personaId = process.env.ANAM_PERSONA_ID || req.body.personaId;
-    const { studentName = "Eric", currentContext } = req.body;
+    // 1. Query OpenAlex for rich academic metadata and peer-review venue confirmation
+    const openAlexUrl = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&filter=is_paratext:false&per-page=12&mailto=dissertation-matrix@academic.org`;
+    const openAlexPromise = fetch(openAlexUrl, {
+      headers: { "Accept": "application/json", "User-Agent": "DissertationMatrix/1.0" },
+      signal: AbortSignal.timeout(6500)
+    }).then(r => r.ok ? r.json() : null).catch(() => null);
 
-    if (!apiKey) {
-      return res.json({
-        success: false,
-        hasApiKey: false,
-        sessionToken: null,
-        message: "ANAM_AI_API_KEY not configured. You can set it in Settings/Secrets to enable live video avatar streaming."
-      });
-    }
+    // 2. Query CrossRef for official registration DOI metadata
+    const crossRefUrl = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=10&select=DOI,title,author,published-print,published-online,container-title,volume,issue,page,type,is-referenced-by-count,ISSN`;
+    const crossRefPromise = fetch(crossRefUrl, {
+      headers: { "Accept": "application/json", "User-Agent": "DissertationMatrix/1.0 (mailto:scholar@academic.org)" },
+      signal: AbortSignal.timeout(6500)
+    }).then(r => r.ok ? r.json() : null).catch(() => null);
 
-    // For pre-configured personas in Anam AI Lab, { personaConfig: { personaId } } is the standard payload
-    const basePersonaConfig = personaId
-      ? { personaId }
-      : {
-          name: "Dr. Fisher (Academic AI Coach)",
-          description: "An empathetic, intellectually rigorous academic mentor and ADHD executive coach specializing in Universal Design, Disability Studies, and APA 7th Edition research synthesis.",
-          systemPrompt: `You are Dr. Fisher, the AI Academic Coach for F.I.S.H. Scholar (Focus, Integrity, Synthesis, and Harmony).
-You are speaking directly with ${studentName}.
-You assist across coursework at Mississippi State University (Curriculum & Instruction), CUNY SPS (Disability Studies), and University of Florida (Family & Transition Pipelines).
-When ${studentName} mentions a paper, author, quote, or finding, offer to extract and save the APA citation to their Citation Vault, connect it to other papers, or inject drafted synthesis sections directly into their active writing report.
-Keep verbal responses concise, encouraging, scholarly, and supportive of neurodivergent executive focus.`
-        };
+    const [openAlexData, crossRefData] = await Promise.all([openAlexPromise, crossRefPromise]);
 
-    let anamResponse = await fetch("https://api.anam.ai/v1/auth/session-token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({ personaConfig: basePersonaConfig })
-    });
+    const results: any[] = [];
+    const seenDois = new Set<string>();
 
-    // If initial attempt failed and personaId was set, try alternate format
-    if (!anamResponse.ok && personaId) {
-      console.warn(`Initial Anam session-token failed with status ${anamResponse.status}. Retrying with combined config...`);
-      const combinedConfig = {
-        personaId,
-        systemPrompt: `You are Dr. Fisher, academic coach for ${studentName} at Mississippi State, CUNY SPS, and University of Florida.`
-      };
-      const retryResponse = await fetch("https://api.anam.ai/v1/auth/session-token", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({ personaConfig: combinedConfig })
-      });
-      if (retryResponse.ok) {
-        anamResponse = retryResponse;
+    // Process OpenAlex results first
+    if (openAlexData?.results && Array.isArray(openAlexData.results)) {
+      for (const item of openAlexData.results) {
+        const rawDoi = item.doi ? item.doi.replace(/^https?:\/\/doi\.org\//, "") : "";
+        if (rawDoi && seenDois.has(rawDoi.toLowerCase())) continue;
+        if (rawDoi) seenDois.add(rawDoi.toLowerCase());
+
+        const authors = (item.authorships || []).map((a: any) => {
+          const rawName = a.author?.display_name || "";
+          const nameParts = rawName.split(" ");
+          if (nameParts.length >= 2) {
+            const lastName = nameParts[nameParts.length - 1];
+            const initials = nameParts.slice(0, -1).map((n: string) => n.charAt(0).toUpperCase() + ".").join(" ");
+            return `${lastName}, ${initials}`;
+          }
+          return rawName;
+        });
+
+        const venue = item.primary_location?.source?.display_name || item.host_venue?.display_name || "";
+        const venueType = item.primary_location?.source?.type || item.type || "journal-article";
+        const isPeerReviewed = venueType === "journal" || venueType === "journal-article" || item.type === "article";
+        const pubYear = item.publication_year || (item.publication_date ? parseInt(item.publication_date.split("-")[0]) : new Date().getFullYear());
+
+        results.push({
+          id: item.id || `oa-${Math.random().toString(36).substring(2, 9)}`,
+          title: item.title || "Untitled Scholarly Work",
+          titleSentenceCase: toApaSentenceCase(item.title || ""),
+          authors: authors.length > 0 ? authors : ["Unknown Author"],
+          year: pubYear,
+          journal: venue || "Scholarly Publication",
+          volume: item.biblio?.volume || "",
+          issue: item.biblio?.issue || "",
+          pages: item.biblio?.first_page && item.biblio?.last_page ? `${item.biblio.first_page}–${item.biblio.last_page}` : (item.biblio?.first_page || ""),
+          doi: rawDoi ? `https://doi.org/${rawDoi}` : "",
+          rawDoi: rawDoi,
+          abstract: item.abstract_inverted_index ? reconstructAbstract(item.abstract_inverted_index) : (item.abstract || ""),
+          isPeerReviewed: isPeerReviewed,
+          peerReviewConfidence: isPeerReviewed ? (item.primary_location?.source?.issn_l ? 98 : 90) : 65,
+          venueType: venueType,
+          issn: item.primary_location?.source?.issn_l || (item.primary_location?.source?.issn ? item.primary_location.source.issn[0] : ""),
+          citationCount: item.cited_by_count || 0,
+          isOpenAccess: !!item.open_access?.is_oa,
+          openAccessPdf: item.open_access?.oa_url || "",
+          publisher: item.primary_location?.source?.host_organization_name || "",
+          sourceProvider: "OpenAlex"
+        });
       }
     }
 
-    if (!anamResponse.ok) {
-      const errBody = await anamResponse.text();
-      console.warn("Anam API session token error:", anamResponse.status, errBody);
-      return res.json({
-        success: false,
-        hasApiKey: true,
-        sessionToken: null,
-        error: `Anam API error (${anamResponse.status}): ${errBody}`,
-        personaId: personaId || null
-      });
+    // Complement with CrossRef
+    if (crossRefData?.message?.items && Array.isArray(crossRefData.message.items)) {
+      for (const item of crossRefData.message.items) {
+        const rawDoi = item.DOI || "";
+        if (rawDoi && seenDois.has(rawDoi.toLowerCase())) continue;
+        if (rawDoi) seenDois.add(rawDoi.toLowerCase());
+
+        const authors = (item.author || []).map((a: any) => {
+          if (a.family && a.given) {
+            const initials = a.given.split(" ").map((g: string) => g.charAt(0).toUpperCase() + ".").join(" ");
+            return `${a.family}, ${initials}`;
+          }
+          return a.name || `${a.family || "Author"}`;
+        });
+
+        const year = item["published-print"]?.["date-parts"]?.[0]?.[0] ||
+                     item["published-online"]?.["date-parts"]?.[0]?.[0] ||
+                     (item.created?.["date-parts"]?.[0]?.[0] ?? new Date().getFullYear());
+
+        const journal = Array.isArray(item["container-title"]) ? item["container-title"][0] : (item["container-title"] || "Academic Journal");
+        const isPeerReviewed = item.type === "journal-article" || item.type === "proceedings-article";
+
+        const rawTitle = Array.isArray(item.title) ? item.title[0] : (item.title || "Scholarly Article");
+
+        results.push({
+          id: `cr-${rawDoi || Math.random().toString(36).substring(2, 9)}`,
+          title: rawTitle,
+          titleSentenceCase: toApaSentenceCase(rawTitle),
+          authors: authors.length > 0 ? authors : ["Unknown Author"],
+          year: year,
+          journal: journal,
+          volume: item.volume || "",
+          issue: item.issue || "",
+          pages: item.page ? item.page.replace("-", "–") : "",
+          doi: rawDoi ? `https://doi.org/${rawDoi}` : "",
+          rawDoi: rawDoi,
+          abstract: item.abstract ? item.abstract.replace(/<[^>]+>/g, "").trim() : "",
+          isPeerReviewed: isPeerReviewed,
+          peerReviewConfidence: isPeerReviewed ? 95 : 60,
+          venueType: item.type || "journal-article",
+          issn: Array.isArray(item.ISSN) ? item.ISSN[0] : (item.ISSN || ""),
+          citationCount: item["is-referenced-by-count"] || 0,
+          isOpenAccess: false,
+          openAccessPdf: "",
+          publisher: item.publisher || "",
+          sourceProvider: "CrossRef"
+        });
+      }
     }
 
-    const tokenData = await anamResponse.json();
-    return res.json({
-      success: true,
-      hasApiKey: true,
-      sessionToken: tokenData.sessionToken || tokenData.token,
-      personaId: personaId || null,
-      personaConfig: basePersonaConfig
-    });
+    // If both failed or yielded 0 results, provide curated academic peer-reviewed records based on the search query
+    if (results.length === 0) {
+      const fallbackArticles = getCuratedFallbackArticles(query);
+      return res.json({ success: true, count: fallbackArticles.length, results: fallbackArticles, isFallback: true });
+    }
+
+    res.json({ success: true, count: results.length, results: results.slice(0, 15) });
   } catch (error: any) {
-    console.error("Error creating Anam session token:", error);
-    res.status(500).json({ error: error.message || "Failed to generate Anam session token" });
+    console.error("Academic search error:", error);
+    const fallbackArticles = getCuratedFallbackArticles(query);
+    res.json({ success: true, count: fallbackArticles.length, results: fallbackArticles, isFallback: true });
   }
 });
 
-// Extract & Save APA Citation discussed in conversation / voice
+// Helper: Reconstruct abstract from OpenAlex inverted index
+
+function reconstructAbstract(invertedIndex: Record<string, number[]>): string {
+  if (!invertedIndex || typeof invertedIndex !== "object") return "";
+  const wordsWithPos: { word: string; pos: number }[] = [];
+  for (const [word, positions] of Object.entries(invertedIndex)) {
+    for (const pos of positions) {
+      wordsWithPos.push({ word, pos });
+    }
+  }
+  wordsWithPos.sort((a, b) => a.pos - b.pos);
+  return wordsWithPos.map(w => w.word).join(" ");
+}
+
+// DOI Lookup Endpoint
+
+app.get("/api/academic/doi", async (req, res) => {
+  const rawDoi = (req.query.doi as string || "").trim().replace(/^https?:\/\/doi\.org\//, "");
+  if (!rawDoi) {
+    return res.status(400).json({ error: "Missing 'doi' query parameter" });
+  }
+
+  try {
+    const crossRefUrl = `https://api.crossref.org/works/${encodeURIComponent(rawDoi)}`;
+    const crRes = await fetch(crossRefUrl, {
+      headers: { "Accept": "application/json", "User-Agent": "DissertationMatrix/1.0 (mailto:scholar@academic.org)" },
+      signal: AbortSignal.timeout(6000)
+    });
+
+    if (crRes.ok) {
+      const data = await crRes.json();
+      const item = data.message;
+      const authors = (item.author || []).map((a: any) => {
+        if (a.family && a.given) {
+          const initials = a.given.split(" ").map((g: string) => g.charAt(0).toUpperCase() + ".").join(" ");
+          return `${a.family}, ${initials}`;
+        }
+        return a.name || `${a.family || "Author"}`;
+      });
+
+      const year = item["published-print"]?.["date-parts"]?.[0]?.[0] ||
+                   item["published-online"]?.["date-parts"]?.[0]?.[0] ||
+                   (item.created?.["date-parts"]?.[0]?.[0] ?? new Date().getFullYear());
+      const journal = Array.isArray(item["container-title"]) ? item["container-title"][0] : (item["container-title"] || "");
+      const rawTitle = Array.isArray(item.title) ? item.title[0] : (item.title || "Scholarly Article");
+
+      return res.json({
+        success: true,
+        source: {
+          id: `doi-${rawDoi.replace(/[^a-zA-Z0-9]/g, "_")}`,
+          title: rawTitle,
+          titleSentenceCase: toApaSentenceCase(rawTitle),
+          authors: authors.length > 0 ? authors : ["Unknown Author"],
+          year: year,
+          journal: journal,
+          volume: item.volume || "",
+          issue: item.issue || "",
+          pages: item.page ? item.page.replace("-", "–") : "",
+          doi: `https://doi.org/${rawDoi}`,
+          rawDoi: rawDoi,
+          isPeerReviewed: item.type === "journal-article" || item.type === "proceedings-article",
+          peerReviewConfidence: item.type === "journal-article" ? 98 : 75,
+          venueType: item.type || "journal-article",
+          issn: Array.isArray(item.ISSN) ? item.ISSN[0] : (item.ISSN || ""),
+          citationCount: item["is-referenced-by-count"] || 0,
+          publisher: item.publisher || ""
+        }
+      });
+    }
+
+    res.status(404).json({ error: "DOI not found in registry" });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to resolve DOI" });
+  }
+});
+
+// Peer-Review & APA 7th Validation Endpoint
+
+app.post("/api/academic/validate-source", (req, res) => {
+  const { title, authors, year, journal, volume, issue, pages, doi, issn, publicationType } = req.body;
+
+  const checks: { rule: string; passed: boolean; message: string; severity: "error" | "warning" | "pass" }[] = [];
+
+  // Check 1: Peer-review venue indicator
+  const hasAcademicJournal = !!(journal && journal.trim().length > 2);
+  const isJournalType = publicationType === "journal-article" || publicationType === "Peer-Reviewed Journal" || !publicationType;
+  if (hasAcademicJournal && isJournalType) {
+    checks.push({
+      rule: "Peer-Reviewed Scholarly Venue",
+      passed: true,
+      message: `Published in scholarly journal "${journal}". Meets dissertation peer-review criteria.`,
+      severity: "pass"
+    });
+  } else {
+    checks.push({
+      rule: "Peer-Reviewed Scholarly Venue",
+      passed: false,
+      message: "Journal or scholarly container title is missing or unverified. Dissertations require peer-reviewed provenance.",
+      severity: "error"
+    });
+  }
+
+  // Check 2: Registered DOI
+  const hasDoi = !!(doi && doi.trim().startsWith("https://doi.org/10."));
+  if (hasDoi) {
+    checks.push({
+      rule: "Active HTTPS DOI Format (APA 7th Standard)",
+      passed: true,
+      message: "Direct HTTPS DOI URL present and conforms to APA 7th (https://doi.org/10.xxxx/...).",
+      severity: "pass"
+    });
+  } else if (doi && !doi.startsWith("https://doi.org/")) {
+    checks.push({
+      rule: "Active HTTPS DOI Format (APA 7th Standard)",
+      passed: false,
+      message: "DOI must be formatted as an active HTTPS hyperlink (https://doi.org/10.xxxx/...), not 'doi:' or 'dx.doi.org'.",
+      severity: "error"
+    });
+  } else {
+    checks.push({
+      rule: "Active HTTPS DOI Format (APA 7th Standard)",
+      passed: false,
+      message: "Missing DOI. Peer-reviewed journal articles in APA 7th require a DOI where available.",
+      severity: "warning"
+    });
+  }
+
+  // Check 3: Author inversion & formatting
+  const authorList = Array.isArray(authors) ? authors : (typeof authors === "string" ? [authors] : []);
+  const authorInvertedValid = authorList.length > 0 && authorList.every((a: string) => /^[A-Z][a-zA-Z\s'-]+,\s+[A-Z]\./.test(a.trim()));
+  if (authorInvertedValid) {
+    checks.push({
+      rule: "APA 7th Author Inversion",
+      passed: true,
+      message: "Authors correctly formatted as Surname, Initial(s) (e.g., 'Smith, J. A.').",
+      severity: "pass"
+    });
+  } else {
+    checks.push({
+      rule: "APA 7th Author Inversion",
+      passed: false,
+      message: "Authors must be inverted: Surname, First Initial(s). Example: 'Bandura, A.' instead of 'Albert Bandura'.",
+      severity: "warning"
+    });
+  }
+
+  // Check 4: Title Sentence Case
+  const words = (title || "").trim().split(/\s+/);
+  const uppercaseWords = words.slice(1).filter((w: string) => {
+    const clean = w.replace(/^[^\w]+|[^\w]+$/g, "");
+    return clean.length > 1 && clean[0] === clean[0].toUpperCase() && clean !== clean.toUpperCase();
+  });
+  const isSentenceCase = uppercaseWords.length === 0;
+  if (isSentenceCase) {
+    checks.push({
+      rule: "APA 7th Article Title Sentence Case",
+      passed: true,
+      message: "Article title correctly uses sentence case (only first letter and proper nouns capitalized).",
+      severity: "pass"
+    });
+  } else {
+    checks.push({
+      rule: "APA 7th Article Title Sentence Case",
+      passed: false,
+      message: `Title appears to use Title Case instead of Sentence Case. Found capitalized words: "${uppercaseWords.slice(0, 3).join(", ")}". In APA 7th, article titles are sentence case.`,
+      severity: "warning"
+    });
+  }
+
+  // Check 5: Dissertation Currency / Recency (5-7 year academic benchmark)
+  const numericYear = parseInt(year);
+  const currentYear = new Date().getFullYear();
+  if (numericYear && (currentYear - numericYear <= 7)) {
+    checks.push({
+      rule: "Dissertation Currency (Within 7 Years)",
+      passed: true,
+      message: `Published in ${numericYear} (${currentYear - numericYear} years ago). Complies with literature currency expectations.`,
+      severity: "pass"
+    });
+  } else if (numericYear) {
+    checks.push({
+      rule: "Dissertation Currency (Within 7 Years)",
+      passed: false,
+      message: `Published in ${numericYear} (${currentYear - numericYear} years ago). Consider justifying as seminal/foundational literature in your Chapter 2.`,
+      severity: "warning"
+    });
+  }
+
+  // Check 6: Volume, Issue & Pagination
+  if (volume && pages) {
+    checks.push({
+      rule: "Volume & Pagination Completeness",
+      passed: true,
+      message: `Complete bibliographic metadata: Vol. ${volume}${issue ? `(${issue})` : ""}, pp. ${pages}.`,
+      severity: "pass"
+    });
+  } else {
+    checks.push({
+      rule: "Volume & Pagination Completeness",
+      passed: false,
+      message: "Missing volume number or page ranges. Complete periodic metadata is required for APA 7th reference entries.",
+      severity: "warning"
+    });
+  }
+
+  const passedCount = checks.filter(c => c.passed).length;
+  const score = Math.round((passedCount / checks.length) * 100);
+
+  res.json({
+    success: true,
+    complianceScore: score,
+    isCompliant: score >= 80,
+    peerReviewedStatus: hasAcademicJournal ? "verified" : "unverified",
+    checks
+  });
+});
+
+// Curated peer-reviewed fallback articles
+
+function getCuratedFallbackArticles(searchQuery: string) {
+  const allArticles = [
+    {
+      id: "lit-1",
+      title: "Algorithmic amplification and epistemic bubbles: A multi-platform empirical analysis of informational homophily",
+      titleSentenceCase: "Algorithmic amplification and epistemic bubbles: A multi-platform empirical analysis of informational homophily",
+      authors: ["Bail, C. A.", "Argyle, L. P.", "Brown, T. W.", "Kalluri, N."],
+      year: 2023,
+      journal: "Journal of Communication",
+      volume: "73",
+      issue: "4",
+      pages: "341–356",
+      doi: "https://doi.org/10.1093/joc/jqad018",
+      rawDoi: "10.1093/joc/jqad018",
+      abstract: "This study provides a multi-platform empirical evaluation of algorithmic recommendation engines across 42,000 participants, demonstrating how engagement-maximizing heuristics exacerbate epistemic divergence while reinforcing affective polarization.",
+      isPeerReviewed: true,
+      peerReviewConfidence: 99,
+      venueType: "journal-article",
+      issn: "0021-9916",
+      citationCount: 148,
+      isOpenAccess: true,
+      publisher: "Oxford University Press",
+      sourceProvider: "OpenAlex (Verified Peer-Reviewed)"
+    },
+    {
+      id: "lit-2",
+      title: "Epistemic injustice in automated decision systems: Measuring procedural harms in high-stakes public sector governance",
+      titleSentenceCase: "Epistemic injustice in automated decision systems: Measuring procedural harms in high-stakes public sector governance",
+      authors: ["Benjamin, R.", "Kroll, J. A."],
+      year: 2022,
+      journal: "Big Data & Society",
+      volume: "9",
+      issue: "2",
+      pages: "1–17",
+      doi: "https://doi.org/10.1177/20539517221102945",
+      rawDoi: "10.1177/20539517221102945",
+      abstract: "We formulate an epistemological evaluation framework for algorithmic administrative decisions, detailing how testimonial injustice arises when marginalized subjects cannot challenge non-interpretable model weights.",
+      isPeerReviewed: true,
+      peerReviewConfidence: 98,
+      venueType: "journal-article",
+      issn: "2053-9517",
+      citationCount: 215,
+      isOpenAccess: true,
+      publisher: "SAGE Publications",
+      sourceProvider: "CrossRef (Verified Peer-Reviewed)"
+    },
+    {
+      id: "lit-3",
+      title: "Synthesizing qualitative literature in doctoral dissertations: Methodological rigor, thematic coding, and epistemic reflexivity",
+      titleSentenceCase: "Synthesizing qualitative literature in doctoral dissertations: Methodological rigor, thematic coding, and epistemic reflexivity",
+      authors: ["Braun, V.", "Clarke, V.", "Terry, G."],
+      year: 2021,
+      journal: "Qualitative Research in Psychology",
+      volume: "18",
+      issue: "3",
+      pages: "328–352",
+      doi: "https://doi.org/10.1080/14780887.2020.1769855",
+      rawDoi: "10.1080/14780887.2020.1769855",
+      abstract: "A critical methodological guide for doctoral scholars conducting qualitative thematic synthesis. Details matrix coding techniques, researcher positionality tracking, and audit trail construction for defensible literature review chapters.",
+      isPeerReviewed: true,
+      peerReviewConfidence: 99,
+      venueType: "journal-article",
+      issn: "1478-0887",
+      citationCount: 890,
+      isOpenAccess: false,
+      publisher: "Routledge / Taylor & Francis",
+      sourceProvider: "OpenAlex (Verified Peer-Reviewed)"
+    },
+    {
+      id: "lit-4",
+      title: "A systematic review and meta-analysis of interventions mitigating algorithmic bias in peer-review selection",
+      titleSentenceCase: "A systematic review and meta-analysis of interventions mitigating algorithmic bias in peer-review selection",
+      authors: ["Gao, L. X.", "van Dijk, M.", "Sorensen, H. P."],
+      year: 2024,
+      journal: "Nature Human Behaviour",
+      volume: "8",
+      issue: "1",
+      pages: "88–104",
+      doi: "https://doi.org/10.1038/s41562-023-01772-1",
+      rawDoi: "10.1038/s41562-023-01772-1",
+      abstract: "Analyzing 124 experimental trials across academic publishing repositories, this meta-analysis quantifies effect sizes of double-blind review and structured evaluation matrices on reducing institutional prestige bias (d = -0.34, p < 0.001).",
+      isPeerReviewed: true,
+      peerReviewConfidence: 100,
+      venueType: "journal-article",
+      issn: "2397-3374",
+      citationCount: 67,
+      isOpenAccess: true,
+      publisher: "Springer Nature",
+      sourceProvider: "CrossRef (Verified Peer-Reviewed)"
+    },
+    {
+      id: "lit-5",
+      title: "Deliberative systems in the platform age: How social media architecture constrains democratic reasoning",
+      titleSentenceCase: "Deliberative systems in the platform age: How social media architecture constrains democratic reasoning",
+      authors: ["Dryzek, J. S.", "Bächtiger, A.", "Milewicz, K."],
+      year: 2023,
+      journal: "American Political Science Review",
+      volume: "117",
+      issue: "2",
+      pages: "675–691",
+      doi: "https://doi.org/10.1017/S0003055422000898",
+      rawDoi: "10.1017/S0003055422000898",
+      abstract: "Develops an institutional framework examining how algorithmic curation structures deliberative capacity across macro-level civic spaces, identifying systematic structural barriers to epistemic diversity.",
+      isPeerReviewed: true,
+      peerReviewConfidence: 100,
+      venueType: "journal-article",
+      issn: "0003-0554",
+      citationCount: 184,
+      isOpenAccess: false,
+      publisher: "Cambridge University Press",
+      sourceProvider: "OpenAlex (Verified Peer-Reviewed)"
+    }
+  ];
+
+  const q = searchQuery.toLowerCase();
+  const matched = allArticles.filter(a =>
+    a.title.toLowerCase().includes(q) ||
+    a.authors.some(auth => auth.toLowerCase().includes(q)) ||
+    a.abstract.toLowerCase().includes(q) ||
+    a.journal.toLowerCase().includes(q)
+  );
+
+  return matched.length > 0 ? matched : allArticles;
+}
+
+// 2. Syllabus Intelligence Extractor
+
 app.post("/api/anam/extract-citation-voice", async (req, res) => {
   try {
     const { discussionSnippet, paperTitle, targetCourseId } = req.body;
@@ -2074,6 +2041,7 @@ Extract a complete, verified APA 7 citation record in JSON with:
 });
 
 // Cross-Paper Synthesis & Scholar Report Generator
+
 app.post("/api/anam/cross-paper-synthesis", async (req, res) => {
   try {
     const { primaryTopic, selectedCitationIds, selectedCitations, currentCourses } = req.body;
@@ -2140,6 +2108,7 @@ Return a structured JSON object containing:
 });
 
 // Generate Academic Code Script (Python / R / Jupyter)
+
 app.post("/api/anam/generate-code-script", async (req, res) => {
   try {
     const { taskDescription, language = "python", datasetContext } = req.body;
@@ -2173,6 +2142,7 @@ Context: ${datasetContext || "Graduate empirical study on Universal Design and a
 // ==========================================
 
 // Check GPTZero API status
+
 app.get("/api/gptzero/status", (_req, res) => {
   const hasKey = !!process.env.GPTZERO_API_KEY;
   res.json({
@@ -2184,6 +2154,7 @@ app.get("/api/gptzero/status", (_req, res) => {
 });
 
 // Run live GPTZero scan on academic draft or text
+
 app.post("/api/gptzero/scan", async (req, res) => {
   try {
     const { document: documentText, apiKey: clientApiKey } = req.body;
@@ -2298,6 +2269,7 @@ Return a valid JSON object with:
 // ==========================================
 // 10. NOTION EXPORT & DATABASE PARSER
 // ==========================================
+
 app.post("/api/notion/parse", async (req, res) => {
   try {
     const { rawContent, knownCourses = [] } = req.body;
@@ -2415,6 +2387,7 @@ Parse this content into 3 structured categories in JSON:
 });
 
 // Git & GitHub Export Endpoints
+
 app.get("/api/git/status", async (_req, res) => {
   try {
     const { exec } = await import("child_process");
@@ -2480,6 +2453,7 @@ app.post("/api/git/push", async (req, res) => {
 });
 
 // Vite Middleware for Dev and Static Serving for Production
+
 async function start() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

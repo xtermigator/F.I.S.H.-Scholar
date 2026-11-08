@@ -1,331 +1,462 @@
-import React, { useState, useEffect } from 'react';
-import {
-  BookOpen,
-  Search,
-  CheckCircle2,
-  FileText,
-  Database,
-  Plus,
-  RefreshCw,
-  ShieldCheck,
-  Sparkles,
-  Github
-} from 'lucide-react';
-import { DissertationMatrixDashboard } from './components/matrix/DissertationMatrixDashboard';
-import { SourceIntegrationModal } from './components/matrix/SourceIntegrationModal';
-import { ApaComplianceModal } from './components/matrix/ApaComplianceModal';
-import { CitationGeneratorModal } from './components/matrix/CitationGeneratorModal';
-import { CellEditorModal } from './components/matrix/CellEditorModal';
-import { ThemeManagerModal } from './components/matrix/ThemeManagerModal';
-import { SourceDetailModal } from './components/matrix/SourceDetailModal';
-import { SupabaseAuthModal } from './components/matrix/SupabaseAuthModal';
-import { GitHubExportModal } from './components/matrix/GitHubExportModal';
+import React, { useEffect, useRef, useState } from 'react';
+import { Navbar } from './components/Navbar';
+import { TodayView } from './components/TodayView';
+import { CoursesView } from './components/CoursesView';
+import { AssignmentsView } from './components/AssignmentsView';
+import { LibraryView } from './components/LibraryView';
+import { WriteView } from './components/WriteView';
+import { FocusView } from './components/FocusView';
+import { MeView } from './components/MeView';
+import { CompanionDrawer } from './components/CompanionDrawer';
+import { SyllabusModal } from './components/SyllabusModal';
+import { AuthorshipModal } from './components/AuthorshipModal';
+import { CommandCenterView } from './components/CommandCenterView';
+import { AskFishView } from './components/AskFishView';
+import { TalkView } from './components/TalkView';
+import { SearchView } from './components/SearchView';
+import { ReportsView } from './components/ReportsView';
+import { CalendarView } from './components/CalendarView';
+import { StudyView } from './components/StudyView';
+import { DiscussionsView } from './components/DiscussionsView';
+import { SettingsView } from './components/SettingsView';
+import { QuickAddButton } from './components/QuickAdd';
+import { ChatView } from './components/ChatView';
+import { AnamAvatarModal } from './components/AnamAvatarModal';
+import { NotionImportModal } from './components/NotionImportModal';
+import { MatrixView } from './MatrixView';
+import { StoreProvider, useStore } from './state/store';
 
 import {
-  DissertationProject,
-  MatrixTheme,
-  PeerReviewedSource,
-  MatrixCell
-} from './types/matrix';
-import { MatrixStorage } from './lib/matrixStorage';
-import { SupabaseService, isSupabaseConfigured } from './lib/supabase';
-import { auditSourceApa7 } from './lib/apa7Engine';
+  INITIAL_ACADEMIC_MEMORY,
+  INITIAL_STUDENT_PROFILE,
+  INITIAL_AUTHORSHIP_DOSSIER
+} from './data/mockData';
 
-type ActiveViewTab = 'matrix' | 'sources' | 'apa' | 'citations';
+import {
+  TabType,
+  Institution,
+  Course,
+  Assignment,
+  Citation,
+  AcademicMemoryNode,
+  StudentProfile,
+  AuthorshipDossier
+} from './types';
 
-export default function App() {
-  // Navigation & Views
-  const [activeTab, setActiveTab] = useState<ActiveViewTab>('matrix');
+function AppShell() {
+  const store = useStore();
+  // Navigation — defaults to the store-backed Command Center (first-milestone experience).
+  const [activeTab, setActiveTab] = useState<TabType>('COMMAND');
 
-  // Core State
-  const [project, setProject] = useState<DissertationProject>(() => MatrixStorage.loadProject());
-  const [themes, setThemes] = useState<MatrixTheme[]>(() => MatrixStorage.loadThemes());
-  const [sources, setSources] = useState<PeerReviewedSource[]>(() => MatrixStorage.loadSources());
-  const [cells, setCells] = useState<MatrixCell[]>(() => MatrixStorage.loadCells());
+  // Academic Knowledge Graph State
+  const institutions = store.institutions;
+  const courses = store.courses;
+  const assignments = store.assignments;
+  const citations = store.citations;
+  const [academicMemory, setAcademicMemory] = useState<AcademicMemoryNode[]>(INITIAL_ACADEMIC_MEMORY);
+  const [profile, setProfile] = useState<StudentProfile>(INITIAL_STUDENT_PROFILE);
 
-  // Modals
-  const [isSourceModalOpen, setIsSourceModalOpen] = useState(false);
-  const [isApaModalOpen, setIsApaModalOpen] = useState(false);
-  const [isCitationModalOpen, setIsCitationModalOpen] = useState(false);
-  const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
-  const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
-  const [isGitHubModalOpen, setIsGitHubModalOpen] = useState(false);
+  // Active selections
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(assignments[0]?.id || null);
+  const [focusAssignmentId, setFocusAssignmentId] = useState<string | null>(null);
+  const [focusMinutes, setFocusMinutes] = useState<number>(20);
 
-  // Cell Editor Modal
-  const [selectedCellTarget, setSelectedCellTarget] = useState<{
-    source: PeerReviewedSource;
-    theme: MatrixTheme;
-    cell: MatrixCell | null;
-  } | null>(null);
-
-  // Source Detail Modal
-  const [selectedSourceDetail, setSelectedSourceDetail] = useState<PeerReviewedSource | null>(null);
-
-  // Sync state
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<string | null>(null);
-
-  // Auto-save debounced to localStorage & Supabase
   useEffect(() => {
-    MatrixStorage.saveProject(project);
-    MatrixStorage.saveThemes(themes);
-    MatrixStorage.saveSources(sources);
-    MatrixStorage.saveCells(cells);
-  }, [project, themes, sources, cells]);
+    if (!selectedAssignmentId && assignments[0]?.id) {
+      setSelectedAssignmentId(assignments[0].id);
+      return;
+    }
+    if (selectedAssignmentId && !assignments.some((a) => a.id === selectedAssignmentId)) {
+      setSelectedAssignmentId(assignments[0]?.id || null);
+    }
+  }, [assignments, selectedAssignmentId]);
 
-  // Sync to Supabase trigger
-  const handleCloudSync = async () => {
-    setIsSyncing(true);
-    setSyncStatus(null);
+  // Modals & Drawers
+  const [isCompanionOpen, setIsCompanionOpen] = useState(false);
+  const [isAnamAvatarOpen, setIsAnamAvatarOpen] = useState(false);
+  const [isNotionImportOpen, setIsNotionImportOpen] = useState(false);
+  const archiveInputRef = useRef<HTMLInputElement>(null);
+
+  // Archive export/import (preserved from main's Navbar storage menu)
+  const handleExportArchive = () => {
+    const archive = {
+      exportedAt: new Date().toISOString(),
+      institutions,
+      courses,
+      assignments,
+      citations,
+    };
+    const blob = new Blob([JSON.stringify(archive, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `fish-scholar-archive-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportArchive = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     try {
-      const res = await SupabaseService.syncToSupabase({
-        project,
-        sources,
-        themes,
-        matrixCells: cells
-      });
-      setSyncStatus(res.message);
-      setTimeout(() => setSyncStatus(null), 4000);
-    } catch (err: any) {
-      setSyncStatus('Sync notice: Preserved in local vault.');
-      setTimeout(() => setSyncStatus(null), 4000);
+      const data = JSON.parse(await file.text());
+      for (const collection of ['institutions', 'courses', 'assignments', 'citations'] as const) {
+        if (Array.isArray(data[collection])) {
+          for (const entity of data[collection]) {
+            if (entity?.id) await store.save(collection, entity);
+          }
+        }
+      }
+    } catch {
+      // Invalid archive file: leave existing data untouched.
     } finally {
-      setIsSyncing(false);
+      e.target.value = '';
+    }
+  };
+  const [isSyllabusModalOpen, setIsSyllabusModalOpen] = useState(false);
+  const [syllabusTargetCourseId, setSyllabusTargetCourseId] = useState<string | undefined>(undefined);
+  const [isAuthorshipModalOpen, setIsAuthorshipModalOpen] = useState(false);
+  const [authorshipTargetAsgId, setAuthorshipTargetAsgId] = useState<string | null>(null);
+
+  // Handlers
+  const handleStartFocus = (assignmentId?: string, minutes?: number) => {
+    if (assignmentId) {
+      setFocusAssignmentId(assignmentId);
+      setSelectedAssignmentId(assignmentId);
+    }
+    if (minutes) setFocusMinutes(minutes);
+    setActiveTab('FOCUS');
+  };
+
+  const handleOpenAssignment = (assignmentId: string) => {
+    setSelectedAssignmentId(assignmentId);
+    setActiveTab('ASSIGNMENTS');
+  };
+
+  const handleOpenWritingStudio = (assignmentId: string) => {
+    setSelectedAssignmentId(assignmentId);
+    setActiveTab('WRITE');
+  };
+
+  const handleAskCoach = (contextPrompt: string) => {
+    setIsCompanionOpen(true);
+  };
+
+  const handleOpenSyllabusModal = (courseId?: string) => {
+    setSyllabusTargetCourseId(courseId);
+    setIsSyllabusModalOpen(true);
+  };
+
+  const handleOpenAuthorshipDossier = (assignmentId: string) => {
+    setAuthorshipTargetAsgId(assignmentId);
+    setIsAuthorshipModalOpen(true);
+  };
+
+  const handleApplySyllabusData = (courseId: string, extracted: any) => {
+    const existingCourse = courses.find((c) => c.id === courseId);
+    if (!existingCourse) return;
+    // Update course policies and professor if extracted
+    store.save('courses', {
+      ...existingCourse,
+      professor: {
+        ...existingCourse.professor,
+        name: extracted.professor?.name || existingCourse.professor.name,
+        email: extracted.professor?.email || existingCourse.professor.email,
+        officeHours: extracted.professor?.officeHours || existingCourse.professor.officeHours
+      },
+      policies: {
+        ...existingCourse.policies,
+        aiPolicy: extracted.policies?.aiPolicy || existingCourse.policies.aiPolicy,
+        accommodations: extracted.policies?.accommodations || existingCourse.policies.accommodations
+      }
+    });
+
+    // If new assignments extracted, add them
+    if (extracted.assignments && Array.isArray(extracted.assignments)) {
+      const newAsgs: Assignment[] = extracted.assignments.map((asg: any, i: number) => ({
+        id: `asg-extracted-${Date.now()}-${i}`,
+        courseId,
+        title: asg.title || 'Extracted Deliverable',
+        type: 'Other',
+        status: 'not_started',
+        prompt: asg.description || 'Deliverable synthesized from syllabus.',
+        dueDate: asg.dueDate || 'TBD',
+        dueTime: '11:59 PM',
+        urgency: 'due_soon',
+        points: 100,
+        weight: asg.weight || '15% of Final Grade',
+        estimatedMinutes: 45,
+        requiredReadings: [],
+        checklist: [
+          { id: 'ck-1', text: 'Review syllabus guidelines', completed: false },
+          { id: 'ck-2', text: 'Draft in Writing Studio', completed: false }
+        ],
+        drafts: [],
+        rubric: 'Standard institutional criteria.'
+      }));
+
+      newAsgs.forEach((a) => store.save('assignments', a));
     }
   };
 
-  // Add newly sourced article
-  const handleAddSource = (newSource: PeerReviewedSource) => {
-    const updatedSources = [newSource, ...sources];
-    setSources(updatedSources);
-
-    // Prompt user with newly added source
-    setSyncStatus(`Added "${newSource.title.slice(0, 36)}..." to matrix.`);
-    setTimeout(() => setSyncStatus(null), 4000);
+  const handleAddCourse = (newCourse: Course) => {
+    store.save('courses', newCourse);
   };
 
-  // Update source
-  const handleUpdateSource = (updatedSource: PeerReviewedSource) => {
-    const audit = auditSourceApa7(updatedSource);
-    const withScore = { ...updatedSource, apaComplianceScore: audit.score };
-    setSources(prev => prev.map(s => s.id === withScore.id ? withScore : s));
+  const handleAddCitation = (newCitation: Citation) => {
+    store.save('citations', newCitation);
   };
 
-  // Batch update sources (e.g. from Auto-Fix All in APA compliance modal)
-  const handleBatchUpdateSources = (updatedSources: PeerReviewedSource[]) => {
-    setSources(updatedSources);
-    setSyncStatus('Auto-fixed all sources to strict APA 7th standards.');
-    setTimeout(() => setSyncStatus(null), 4000);
+  const handleUpdateCitations = (updatedCitations: Citation[]) => {
+    const updatedIds = new Set(updatedCitations.map((c) => c.id));
+    citations
+      .filter((c) => !updatedIds.has(c.id))
+      .forEach((c) => store.remove('citations', c.id));
+    updatedCitations.forEach((c) => store.save('citations', c));
   };
 
-  // Delete source
-  const handleDeleteSource = (sourceId: string) => {
-    setSources(prev => prev.filter(s => s.id !== sourceId));
-    setCells(prev => prev.filter(c => c.sourceId !== sourceId));
-  };
-
-  // Save/Update Cell
-  const handleSaveCell = (updatedCell: MatrixCell) => {
-    setCells(prev => {
-      const existingIdx = prev.findIndex(
-        c => c.sourceId === updatedCell.sourceId && c.themeId === updatedCell.themeId
-      );
-      if (existingIdx >= 0) {
-        const copy = [...prev];
-        copy[existingIdx] = updatedCell;
-        return copy;
-      }
-      return [...prev, updatedCell];
+  const handleToggleChecklistItem = (assignmentId: string, itemId: string) => {
+    const assignment = assignments.find((a) => a.id === assignmentId);
+    if (!assignment) return;
+    store.save('assignments', {
+      ...assignment,
+      checklist: assignment.checklist.map((item) =>
+        item.id === itemId ? { ...item, completed: !item.completed } : item
+      )
     });
   };
 
-  // Save themes
-  const handleSaveThemes = (updatedThemes: MatrixTheme[]) => {
-    setThemes(updatedThemes);
+  const handleSaveDraft = (assignmentId: string, content: string, versionName: string) => {
+    const assignment = assignments.find((a) => a.id === assignmentId);
+    if (!assignment) return;
+    const newDraft = {
+      id: `draft-${Date.now()}`,
+      versionName,
+      content,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      wordCount: content.trim() ? content.trim().split(/\s+/).length : 0
+    };
+    store.save('assignments', {
+      ...assignment,
+      drafts: [newDraft, ...assignment.drafts]
+    });
   };
 
+  const handleUpdateProfile = (updated: Partial<StudentProfile>) => {
+    setProfile((prev) => ({ ...prev, ...updated }));
+  };
+
+  // Selected assignment / course context for companion
+  const currentAssignment = assignments.find((a) => a.id === selectedAssignmentId) || assignments[0];
+  const currentCourse = courses.find((c) => c.id === currentAssignment?.courseId);
+  const currentInstitution = institutions.find((i) => i.id === currentCourse?.institutionId);
+
   return (
-    <div className="flex h-screen flex-col bg-[#FDFDFD] text-stone-900 font-sans selection:bg-amber-100 selection:text-amber-950 overflow-hidden">
-      {/* Top Bar Contract: Zone 1 (Brand) — Zone 2 (Nav links) — Zone 3 (Actions) */}
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-stone-200 bg-white px-6 z-30">
-        {/* Zone 1: Single text element wordmark in display font */}
-        <div className="flex items-center gap-3">
-          <a
-            href="/"
-            onClick={(e) => { e.preventDefault(); setActiveTab('matrix'); }}
-            className="font-serif text-lg font-bold tracking-tight text-stone-900 hover:text-stone-700 transition-colors whitespace-nowrap"
-          >
-            Dissertation Matrix
-          </a>
-        </div>
+    <div className="min-h-screen bg-[#FDFDFD] text-neutral-900 font-sans antialiased selection:bg-amber-100 selection:text-amber-900">
+      {/* Universal Academic Navbar */}
+      <Navbar
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        institutions={institutions}
+        selectedInstitutionId={null}
+        setSelectedInstitutionId={() => {}}
+        onOpenCompanion={() => setIsCompanionOpen(!isCompanionOpen)}
+        onOpenAnamAvatar={() => setIsAnamAvatarOpen(true)}
+        onOpenNotionImport={() => setIsNotionImportOpen(true)}
+        onExportArchive={handleExportArchive}
+        onImportArchiveClick={() => archiveInputRef.current?.click()}
+        onQuickFocus={() => handleStartFocus(undefined, 20)}
+      />
 
-        {/* Zone 2: 4-6 clean text navigation links */}
-        <nav className="hidden md:flex items-center gap-8 text-xs font-medium text-stone-600">
-          <button
-            onClick={() => setActiveTab('matrix')}
-            className={`transition-colors hover:text-stone-900 pb-0.5 border-b-2 ${
-              activeTab === 'matrix' ? 'border-stone-900 text-stone-900 font-semibold' : 'border-transparent text-stone-600'
-            }`}
-          >
-            Matrix Dashboard
-          </button>
-          <button
-            onClick={() => setIsSourceModalOpen(true)}
-            className="transition-colors hover:text-stone-900 pb-0.5 border-b-2 border-transparent text-stone-600"
-          >
-            Source Integration
-          </button>
-          <button
-            onClick={() => setIsApaModalOpen(true)}
-            className="transition-colors hover:text-stone-900 pb-0.5 border-b-2 border-transparent text-stone-600"
-          >
-            APA 7th Compliance
-          </button>
-          <button
-            onClick={() => setIsCitationModalOpen(true)}
-            className="transition-colors hover:text-stone-900 pb-0.5 border-b-2 border-transparent text-stone-600"
-          >
-            Citation Generator & Bibliography
-          </button>
-        </nav>
+      {activeTab === 'MATRIX' && <MatrixView />}
 
-        {/* Zone 3: 1-2 primary actions */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setIsGitHubModalOpen(true)}
-            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono border border-stone-300 hover:border-stone-800 bg-white text-stone-800 transition-colors whitespace-nowrap cursor-pointer shadow-2xs"
-            title="Save and export codebase to GitHub"
-          >
-            <Github className="h-3 w-3 text-stone-700" />
-            <span>Save to GitHub</span>
-          </button>
+      {/* Main Content View Container */}
+      {activeTab !== 'MATRIX' && (
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-28 md:pb-24">
+        {activeTab === 'COMMAND' && <CommandCenterView />}
 
-          <button
-            onClick={() => setIsSupabaseModalOpen(true)}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono border border-stone-200 hover:border-stone-400 bg-white text-stone-700 transition-colors whitespace-nowrap cursor-pointer"
-            title="Database persistence & authentication"
-          >
-            <Database className="h-3 w-3 text-stone-500" />
-            <span>{isSupabaseConfigured ? 'Supabase Sync' : 'Local Vault'}</span>
-          </button>
+        {activeTab === 'ASK' && <AskFishView />}
 
-          <button
-            onClick={() => setIsSourceModalOpen(true)}
-            className="flex items-center gap-1.5 bg-stone-900 text-white px-3.5 py-1.5 text-xs font-medium hover:bg-stone-800 transition-colors whitespace-nowrap rounded-xs shadow-2xs"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            <span>Add Source</span>
-          </button>
-        </div>
-      </header>
+        {activeTab === 'TALK' && <TalkView />}
 
-      {/* Sync Status Banner if active */}
-      {syncStatus && (
-        <aside aria-label="Notification" className="bg-stone-900 text-stone-100 text-xs py-1.5 px-6 flex items-center justify-between border-b border-stone-800 animate-in fade-in duration-200">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-            <span>{syncStatus}</span>
-          </div>
-          <button
-            onClick={() => setSyncStatus(null)}
-            className="text-stone-400 hover:text-white text-[11px]"
-          >
-            Dismiss
-          </button>
-        </aside>
-      )}
+        {activeTab === 'SEARCH' && <SearchView onNavigate={setActiveTab} />}
 
-      {/* Main View Area */}
-      <main className="flex flex-1 flex-col overflow-hidden">
-        <DissertationMatrixDashboard
-          project={project}
-          themes={themes}
-          sources={sources}
-          cells={cells}
-          onOpenSourceIntegration={() => setIsSourceModalOpen(true)}
-          onOpenApaCompliance={() => setIsApaModalOpen(true)}
-          onOpenCitationGenerator={() => setIsCitationModalOpen(true)}
-          onOpenThemeManager={() => setIsThemeModalOpen(true)}
-          onOpenCellEditor={(source, theme, cell) => {
-            setSelectedCellTarget({ source, theme, cell });
-          }}
-          onOpenSourceDetail={(source) => {
-            setSelectedSourceDetail(source);
-          }}
-          onUpdateProject={(p) => setProject(p)}
-        />
+        {activeTab === 'CALENDAR' && <CalendarView />}
+
+        {activeTab === 'STUDY' && <StudyView />}
+
+        {activeTab === 'DISCUSS' && <DiscussionsView />}
+
+        {activeTab === 'REPORTS' && <ReportsView />}
+
+        {activeTab === 'SETTINGS' && <SettingsView />}
+
+        {activeTab === 'TODAY' && (
+          <TodayView
+            institutions={institutions}
+            courses={courses}
+            assignments={assignments}
+            citations={citations}
+            academicMemory={academicMemory}
+            profile={profile}
+            onNavigateTab={setActiveTab}
+            onStartFocus={handleStartFocus}
+            onOpenAssignment={handleOpenAssignment}
+            onAskCoach={handleAskCoach}
+            onOpenSyllabusIntelligence={handleOpenSyllabusModal}
+          />
+        )}
+
+        {activeTab === 'COURSES' && (
+          <CoursesView
+            institutions={institutions}
+            courses={courses}
+            assignments={assignments}
+            onOpenSyllabusModal={handleOpenSyllabusModal}
+            onOpenAssignment={handleOpenAssignment}
+            onAddCourse={handleAddCourse}
+            onAskCoach={handleAskCoach}
+          />
+        )}
+
+        {activeTab === 'ASSIGNMENTS' && (
+          <AssignmentsView
+            assignments={assignments}
+            courses={courses}
+            institutions={institutions}
+            citations={citations}
+            selectedAssignmentId={selectedAssignmentId}
+            onSelectAssignment={setSelectedAssignmentId}
+            onStartFocus={handleStartFocus}
+            onOpenWritingStudio={handleOpenWritingStudio}
+            onToggleChecklistItem={handleToggleChecklistItem}
+            onGenerateAuthorshipDossier={handleOpenAuthorshipDossier}
+          />
+        )}
+
+        {activeTab === 'LIBRARY' && (
+          <LibraryView
+            citations={citations}
+            academicMemory={academicMemory}
+            courses={courses}
+            institutions={institutions}
+            onAddCitation={handleAddCitation}
+            onUpdateCitations={handleUpdateCitations}
+          />
+        )}
+
+        {activeTab === 'WRITE' && (
+          <WriteView
+            assignments={assignments}
+            courses={courses}
+            institutions={institutions}
+            citations={citations}
+            profile={profile}
+            activeAssignmentId={selectedAssignmentId}
+            onSelectAssignment={setSelectedAssignmentId}
+            onSaveDraft={handleSaveDraft}
+            onOpenAuthorshipDossier={handleOpenAuthorshipDossier}
+            onStartFocus={handleStartFocus}
+          />
+        )}
+
+        {activeTab === 'FOCUS' && (
+          <FocusView
+            assignments={assignments}
+            courses={courses}
+            initialAssignmentId={focusAssignmentId || selectedAssignmentId}
+            initialMinutes={focusMinutes}
+            onOpenWritingStudio={handleOpenWritingStudio}
+            onOpenCompanionWithRole={(role) => setIsCompanionOpen(true)}
+          />
+        )}
+
+        {activeTab === 'ME' && (
+          <MeView
+            profile={profile}
+            courses={courses}
+            institutions={institutions}
+            onUpdateProfile={handleUpdateProfile}
+            onOpenCompanionWithRole={(role) => setIsCompanionOpen(true)}
+          />
+        )}
       </main>
-
-      {/* MODAL 1: Source Integration Modal */}
-      <SourceIntegrationModal
-        isOpen={isSourceModalOpen}
-        onClose={() => setIsSourceModalOpen(false)}
-        onAddSource={handleAddSource}
-      />
-
-      {/* MODAL 2: APA 7th Compliance Audit Modal */}
-      <ApaComplianceModal
-        isOpen={isApaModalOpen}
-        onClose={() => setIsApaModalOpen(false)}
-        sources={sources}
-        onUpdateSource={handleUpdateSource}
-        onBatchUpdateSources={handleBatchUpdateSources}
-      />
-
-      {/* MODAL 3: Citation Generator & Annotated Bibliography Modal */}
-      <CitationGeneratorModal
-        isOpen={isCitationModalOpen}
-        onClose={() => setIsCitationModalOpen(false)}
-        sources={sources}
-        themes={themes}
-        cells={cells}
-        projectTitle={project.title}
-      />
-
-      {/* MODAL 4: Matrix Themes Manager Modal */}
-      <ThemeManagerModal
-        isOpen={isThemeModalOpen}
-        onClose={() => setIsThemeModalOpen(false)}
-        themes={themes}
-        onSaveThemes={handleSaveThemes}
-      />
-
-      {/* MODAL 5: Synthesis Cell Editor Drawer / Modal */}
-      {selectedCellTarget && (
-        <CellEditorModal
-          isOpen={Boolean(selectedCellTarget)}
-          onClose={() => setSelectedCellTarget(null)}
-          cell={selectedCellTarget.cell}
-          source={selectedCellTarget.source}
-          theme={selectedCellTarget.theme}
-          onSave={handleSaveCell}
-        />
       )}
 
-      {/* MODAL 6: Source Detail & Metadata Modal */}
-      {selectedSourceDetail && (
-        <SourceDetailModal
-          isOpen={Boolean(selectedSourceDetail)}
-          onClose={() => setSelectedSourceDetail(null)}
-          source={selectedSourceDetail}
-          onSaveSource={handleUpdateSource}
-          onDeleteSource={handleDeleteSource}
-        />
-      )}
-
-      {/* MODAL 7: Supabase Authentication & Sync Modal */}
-      <SupabaseAuthModal
-        isOpen={isSupabaseModalOpen}
-        onClose={() => setIsSupabaseModalOpen(false)}
-        onSyncTrigger={handleCloudSync}
-        isSyncing={isSyncing}
+      {/* AI Companion Role-Based Coaching Drawer */}
+      <CompanionDrawer
+        isOpen={isCompanionOpen}
+        onClose={() => setIsCompanionOpen(false)}
+        currentAssignment={currentAssignment}
+        currentCourse={currentCourse}
+        citations={citations}
+        onStartFocus={handleStartFocus}
+        onOpenWritingStudio={handleOpenWritingStudio}
       />
 
-      {/* MODAL 8: GitHub Save & Export Modal */}
-      <GitHubExportModal
-        isOpen={isGitHubModalOpen}
-        onClose={() => setIsGitHubModalOpen(false)}
+      {/* Syllabus Intelligence Modal */}
+      <SyllabusModal
+        isOpen={isSyllabusModalOpen}
+        onClose={() => setIsSyllabusModalOpen(false)}
+        courses={courses}
+        institutions={institutions}
+        selectedCourseId={syllabusTargetCourseId}
+        onApplyExtractedData={handleApplySyllabusData}
       />
+
+      {/* Authorship Evidence & Provenance Dossier Modal */}
+      <AuthorshipModal
+        isOpen={isAuthorshipModalOpen}
+        onClose={() => setIsAuthorshipModalOpen(false)}
+        assignment={currentAssignment}
+        course={currentCourse}
+        institution={currentInstitution}
+        dossier={INITIAL_AUTHORSHIP_DOSSIER}
+        citations={citations}
+      />
+
+      {/* Anam.ai Live Avatar Modal (preserved from main) */}
+      <AnamAvatarModal
+        isOpen={isAnamAvatarOpen}
+        onClose={() => setIsAnamAvatarOpen(false)}
+        citations={citations}
+        courses={courses}
+        assignments={assignments}
+        onSaveCitation={(citation) => store.save('citations', citation)}
+        onAddMemory={(node) => setAcademicMemory((prev) => [...prev, node])}
+      />
+
+      {/* Notion Import Modal (preserved from main) */}
+      <NotionImportModal
+        isOpen={isNotionImportOpen}
+        onClose={() => setIsNotionImportOpen(false)}
+        courses={courses}
+        institutions={institutions}
+        onImportItems={async ({ assignments: newAssignments, newCitations }) => {
+          for (const a of newAssignments) await store.save('assignments', a);
+          for (const c of newCitations) await store.save('citations', c);
+        }}
+      />
+
+      {/* Hidden archive file input */}
+      <input
+        ref={archiveInputRef}
+        type="file"
+        accept="application/json"
+        className="hidden"
+        onChange={handleImportArchive}
+      />
+
+      {/* Universal Quick Add (persists through the store) */}
+      <QuickAddButton />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <StoreProvider>
+      <AppShell />
+    </StoreProvider>
   );
 }
