@@ -14,7 +14,8 @@ import {
   Plus,
   ArrowRight,
   Filter,
-  GraduationCap
+  GraduationCap,
+  Database
 } from 'lucide-react';
 import { Assignment, Course, Institution, Citation } from '../types';
 
@@ -29,6 +30,7 @@ interface AssignmentsViewProps {
   onOpenWritingStudio: (assignmentId: string) => void;
   onToggleChecklistItem: (assignmentId: string, itemId: string) => void;
   onGenerateAuthorshipDossier: (assignmentId: string) => void;
+  onOpenNotionImport?: () => void;
 }
 
 export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
@@ -41,7 +43,8 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
   onStartFocus,
   onOpenWritingStudio,
   onToggleChecklistItem,
-  onGenerateAuthorshipDossier
+  onGenerateAuthorshipDossier,
+  onOpenNotionImport
 }) => {
   const [filterInstId, setFilterInstId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'prompt' | 'checklist' | 'readings' | 'drafts' | 'rubric'>('prompt');
@@ -97,8 +100,17 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
           </p>
         </div>
 
-        {/* School Filters */}
+        {/* School Filters & Import */}
         <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            onClick={onOpenNotionImport}
+            className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-50 text-amber-900 border border-amber-300 hover:bg-amber-100 flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+            id="assignments-notion-import-btn"
+          >
+            <Database className="h-3.5 w-3.5 text-amber-700" />
+            <span>Import Notion List</span>
+          </button>
+
           <button
             onClick={() => setFilterInstId(null)}
             className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${

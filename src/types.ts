@@ -12,6 +12,8 @@ export type TabType =
   | 'LIBRARY'
   | 'WRITE'
   | 'FOCUS'
+  | 'CHAT'
+  | 'MATRIX'
   | 'ME'
   | 'REPORTS'
   | 'SETTINGS';

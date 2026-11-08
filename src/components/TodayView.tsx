@@ -13,7 +13,8 @@ import {
   Layers,
   Compass,
   GraduationCap,
-  MessageSquare
+  MessageSquare,
+  Database
 } from 'lucide-react';
 import {
   Institution,
@@ -37,6 +38,7 @@ interface TodayViewProps {
   onOpenAssignment: (assignmentId: string) => void;
   onAskCoach: (contextPrompt: string) => void;
   onOpenSyllabusIntelligence: (courseId?: string) => void;
+  onOpenNotionImport?: () => void;
 }
 
 export const TodayView: React.FC<TodayViewProps> = ({
@@ -50,7 +52,8 @@ export const TodayView: React.FC<TodayViewProps> = ({
   onStartFocus,
   onOpenAssignment,
   onAskCoach,
-  onOpenSyllabusIntelligence
+  onOpenSyllabusIntelligence,
+  onOpenNotionImport
 }) => {
   // Determine urgent item
   const urgentAssignment = assignments.find((a) => a.urgency === 'urgent_tonight') || assignments[0];
@@ -84,6 +87,14 @@ export const TodayView: React.FC<TodayViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={onOpenNotionImport}
+              className="flex items-center gap-2 rounded-xl bg-white border border-neutral-200 px-3.5 py-2 text-xs font-semibold text-neutral-800 hover:bg-neutral-50 hover:border-neutral-300 transition-all cursor-pointer shadow-xs"
+              id="today-notion-import-btn"
+            >
+              <Database className="h-4 w-4 text-amber-700" />
+              <span>Import Notion</span>
+            </button>
             <button
               onClick={() => onNavigateTab('FOCUS')}
               className="flex items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3.5 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100 transition-all cursor-pointer shadow-xs"
@@ -366,6 +377,32 @@ export const TodayView: React.FC<TodayViewProps> = ({
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Google Chat Study Spaces Hub Banner */}
+          <div className="rounded-2xl border border-neutral-200 bg-gradient-to-r from-neutral-900 to-neutral-800 text-white p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span className="text-[11px] font-semibold text-amber-300 uppercase tracking-wider">
+                  Google Workspace Connected
+                </span>
+              </div>
+              <h3 className="font-serif font-bold text-white text-base">
+                Collaborative Google Chat Study Spaces
+              </h3>
+              <p className="text-xs text-neutral-300 max-w-lg font-sans">
+                Coordinate with peer researchers, share APA citations directly into study rooms, and review deliverable timelines.
+              </p>
+            </div>
+
+            <button
+              onClick={() => onNavigateTab('CHAT')}
+              className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold text-xs shrink-0 transition-all cursor-pointer shadow-xs flex items-center gap-1.5 self-start sm:self-auto"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              <span>Open Google Chat Hub</span>
+            </button>
           </div>
         </div>
 

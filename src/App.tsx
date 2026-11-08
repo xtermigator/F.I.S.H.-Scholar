@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Navbar } from './components/Navbar';
 import { TodayView } from './components/TodayView';
 import { CoursesView } from './components/CoursesView';
@@ -20,6 +20,10 @@ import { StudyView } from './components/StudyView';
 import { DiscussionsView } from './components/DiscussionsView';
 import { SettingsView } from './components/SettingsView';
 import { QuickAddButton } from './components/QuickAdd';
+import { ChatView } from './components/ChatView';
+import { AnamAvatarModal } from './components/AnamAvatarModal';
+import { NotionImportModal } from './components/NotionImportModal';
+import { MatrixView } from './MatrixView';
 import { StoreProvider, useStore } from './state/store';
 
 import {
@@ -69,6 +73,46 @@ function AppShell() {
 
   // Modals & Drawers
   const [isCompanionOpen, setIsCompanionOpen] = useState(false);
+  const [isAnamAvatarOpen, setIsAnamAvatarOpen] = useState(false);
+  const [isNotionImportOpen, setIsNotionImportOpen] = useState(false);
+  const archiveInputRef = useRef<HTMLInputElement>(null);
+
+  // Archive export/import (preserved from main's Navbar storage menu)
+  const handleExportArchive = () => {
+    const archive = {
+      exportedAt: new Date().toISOString(),
+      institutions,
+      courses,
+      assignments,
+      citations,
+    };
+    const blob = new Blob([JSON.stringify(archive, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `fish-scholar-archive-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportArchive = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      for (const collection of ['institutions', 'courses', 'assignments', 'citations'] as const) {
+        if (Array.isArray(data[collection])) {
+          for (const entity of data[collection]) {
+            if (entity?.id) await store.save(collection, entity);
+          }
+        }
+      }
+    } catch {
+      // Invalid archive file: leave existing data untouched.
+    } finally {
+      e.target.value = '';
+    }
+  };
   const [isSyllabusModalOpen, setIsSyllabusModalOpen] = useState(false);
   const [syllabusTargetCourseId, setSyllabusTargetCourseId] = useState<string | undefined>(undefined);
   const [isAuthorshipModalOpen, setIsAuthorshipModalOpen] = useState(false);
@@ -217,10 +261,17 @@ function AppShell() {
         selectedInstitutionId={null}
         setSelectedInstitutionId={() => {}}
         onOpenCompanion={() => setIsCompanionOpen(!isCompanionOpen)}
+        onOpenAnamAvatar={() => setIsAnamAvatarOpen(true)}
+        onOpenNotionImport={() => setIsNotionImportOpen(true)}
+        onExportArchive={handleExportArchive}
+        onImportArchiveClick={() => archiveInputRef.current?.click()}
         onQuickFocus={() => handleStartFocus(undefined, 20)}
       />
 
+      {activeTab === 'MATRIX' && <MatrixView />}
+
       {/* Main Content View Container */}
+      {activeTab !== 'MATRIX' && (
       <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-28 md:pb-24">
         {activeTab === 'COMMAND' && <CommandCenterView />}
 
@@ -330,6 +381,7 @@ function AppShell() {
           />
         )}
       </main>
+      )}
 
       {/* AI Companion Role-Based Coaching Drawer */}
       <CompanionDrawer
@@ -361,6 +413,38 @@ function AppShell() {
         institution={currentInstitution}
         dossier={INITIAL_AUTHORSHIP_DOSSIER}
         citations={citations}
+      />
+
+      {/* Anam.ai Live Avatar Modal (preserved from main) */}
+      <AnamAvatarModal
+        isOpen={isAnamAvatarOpen}
+        onClose={() => setIsAnamAvatarOpen(false)}
+        citations={citations}
+        courses={courses}
+        assignments={assignments}
+        onSaveCitation={(citation) => store.save('citations', citation)}
+        onAddMemory={(node) => setAcademicMemory((prev) => [...prev, node])}
+      />
+
+      {/* Notion Import Modal (preserved from main) */}
+      <NotionImportModal
+        isOpen={isNotionImportOpen}
+        onClose={() => setIsNotionImportOpen(false)}
+        courses={courses}
+        institutions={institutions}
+        onImportItems={async ({ assignments: newAssignments, newCitations }) => {
+          for (const a of newAssignments) await store.save('assignments', a);
+          for (const c of newCitations) await store.save('citations', c);
+        }}
+      />
+
+      {/* Hidden archive file input */}
+      <input
+        ref={archiveInputRef}
+        type="file"
+        accept="application/json"
+        className="hidden"
+        onChange={handleImportArchive}
       />
 
       {/* Universal Quick Add (persists through the store) */}

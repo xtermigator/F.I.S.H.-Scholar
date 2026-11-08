@@ -15,6 +15,11 @@ import {
   CalendarDays,
   Brain,
   Video,
+  MessageSquare,
+  BookOpen,
+  Database,
+  Download,
+  UploadCloud,
   Menu,
   X,
   Settings as SettingsIcon,
@@ -50,6 +55,8 @@ const TABS: TabDef[] = [
   { id: 'STUDY', label: 'STUDY', icon: Brain },
   { id: 'WRITE', label: 'WRITE', icon: Feather },
   { id: 'FOCUS', label: 'FOCUS', icon: Timer },
+  { id: 'CHAT', label: 'CHAT', icon: MessageSquare },
+  { id: 'MATRIX', label: 'MATRIX', icon: BookOpen },
   { id: 'ME', label: 'ME', icon: User },
   { id: 'REPORTS', label: 'REPORTS', icon: FileText },
   { id: 'SETTINGS', label: 'SETTINGS', icon: SettingsIcon },
@@ -66,9 +73,16 @@ export const Navbar: React.FC<NavbarProps> = ({
   selectedInstitutionId,
   setSelectedInstitutionId,
   onOpenCompanion,
+  onOpenAnamAvatar,
   onQuickFocus,
+  onOpenNotionImport,
+  onExportArchive,
+  onImportArchiveClick,
+  lastSavedTime = 'Just now',
+  isSaving = false,
 }) => {
   const [moreOpen, setMoreOpen] = useState(false);
+  const [showStorageMenu, setShowStorageMenu] = useState(false);
 
   // Close the "More" sheet whenever the active tab changes.
   useEffect(() => {
@@ -196,6 +210,78 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Quick Actions */}
           <div className="flex items-center gap-2">
+            {/* Storage & Auto-save Status Indicator (from main) */}
+            <div className="relative hidden xl:block">
+              <button
+                onClick={() => setShowStorageMenu(!showStorageMenu)}
+                className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-neutral-50/80 px-2.5 py-1 text-[11px] font-medium text-neutral-600 hover:bg-neutral-100 transition-all cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+                title="Work is persistently saved locally. Click for backup archive options."
+                id="storage-status-btn"
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    isSaving ? 'bg-amber-500 animate-ping' : 'bg-emerald-500'
+                  }`}
+                />
+                <span className="truncate max-w-[100px]">
+                  {isSaving ? 'Saving...' : `Saved ${lastSavedTime}`}
+                </span>
+              </button>
+              {showStorageMenu && (
+                <div className="absolute right-0 mt-1 w-56 rounded-xl border border-neutral-200 bg-white p-2 shadow-xl z-50 text-xs space-y-1">
+                  <div className="px-2 py-1 text-[10px] font-semibold text-neutral-500 uppercase">
+                    Data Persistence & Archives
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowStorageMenu(false);
+                      onExportArchive?.();
+                    }}
+                    className="flex items-center gap-2 w-full rounded-lg px-2.5 py-1.5 text-left text-neutral-700 hover:bg-neutral-100 cursor-pointer"
+                  >
+                    <Download className="h-3.5 w-3.5 text-amber-700" />
+                    <span>Download Archive (.json)</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowStorageMenu(false);
+                      onImportArchiveClick?.();
+                    }}
+                    className="flex items-center gap-2 w-full rounded-lg px-2.5 py-1.5 text-left text-neutral-700 hover:bg-neutral-100 cursor-pointer"
+                  >
+                    <UploadCloud className="h-3.5 w-3.5 text-blue-700" />
+                    <span>Restore / Load Archive</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Notion Importer Button (from main) */}
+            {onOpenNotionImport && (
+              <button
+                onClick={onOpenNotionImport}
+                id="navbar-notion-import-btn"
+                className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-neutral-800 hover:bg-neutral-50 hover:border-neutral-300 transition-all cursor-pointer shadow-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+                title="Import To-Dos, Assignments, and Papers from Notion"
+              >
+                <Database className="h-3.5 w-3.5 text-amber-700" />
+                <span className="hidden md:inline">Notion</span>
+              </button>
+            )}
+
+            {/* Live Avatar (from main) */}
+            {onOpenAnamAvatar && (
+              <button
+                onClick={onOpenAnamAvatar}
+                id="navbar-open-anam-avatar-btn"
+                className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50/80 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 hover:border-amber-400 transition-all cursor-pointer shadow-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+                title="Launch Anam.ai Digital Scholar Avatar"
+              >
+                <Video className="h-3.5 w-3.5 text-amber-700 animate-pulse" />
+                <span className="hidden lg:inline">Live Avatar</span>
+              </button>
+            )}
+
             <button
               onClick={onQuickFocus}
               id="navbar-quick-focus-btn"
