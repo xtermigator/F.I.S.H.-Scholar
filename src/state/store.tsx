@@ -25,6 +25,7 @@ import type {
 import { createRepository } from '../data/repository';
 import { buildDemoSeed } from '../data/seed';
 import { buildLiteratureKnowledgeSeed } from '../data/knowledgeBase';
+import { personalWorkspace } from './personalWorkspace';
 
 /**
  * Central application store. Loads all persisted entities from the Repository on boot and
@@ -50,7 +51,7 @@ export interface StoreState {
 }
 
 export interface StoreActions {
-  save: <T extends Persistable>(collection: Collection, entity: T) => Promise<void>;
+  save: <T extends Persistable>(collection: Collection, entity: T, options?: { throwOnError?: boolean }) => Promise<void>;
   remove: (collection: Collection, id: string) => Promise<void>;
   clearDemo: () => Promise<void>;
   reseedDemo: () => Promise<void>;
@@ -198,7 +199,7 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
   }, [repo, loadAll]);
 
   const save = useCallback<StoreActions['save']>(
-    async (collection, entity) => {
+    async (collection, entity, options) => {
       try {
         // Repository stamps createdAt/updatedAt on write.
         const saved = await repo.put(collection, entity);
@@ -214,6 +215,7 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
         });
       } catch (e: any) {
         setState((s) => ({ ...s, error: e?.message || 'Could not save. Your existing data is safe.' }));
+        if (options?.throwOnError) throw e;
       }
     },
     [repo],
@@ -262,7 +264,7 @@ export const StoreProvider: React.FC<{ repository?: Repository; children: React.
   }, [repo]);
 
   const value: StoreContextValue = {
-    ...state,
+    ...personalWorkspace(state),
     save,
     remove,
     clearDemo,

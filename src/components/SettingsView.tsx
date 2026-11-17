@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { Trash2, Download, RefreshCw, ShieldCheck, Info } from 'lucide-react';
 import { useStore } from '../state/store';
 import { NotionPanel } from './NotionPanel';
-import { SyllabusPanel } from './SyllabusPanel';
 import { ApiKeysPanel } from './ApiKeysPanel';
 
 /**
@@ -107,8 +106,6 @@ export const SettingsView: React.FC = () => {
           <Download className="h-4 w-4" aria-hidden="true" /> Export JSON
         </button>
       </div>
-
-      <SyllabusPanel />
 
       <NotionPanel />
 

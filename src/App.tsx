@@ -19,6 +19,7 @@ import { CalendarView } from './components/CalendarView';
 import { StudyView } from './components/StudyView';
 import { DiscussionsView } from './components/DiscussionsView';
 import { SettingsView } from './components/SettingsView';
+import { SyllabusPanel } from './components/SyllabusPanel';
 import { QuickAddButton } from './components/QuickAdd';
 import { ChatView } from './components/ChatView';
 import { AnamAvatarModal } from './components/AnamAvatarModal';
@@ -47,6 +48,7 @@ function AppShell() {
   const store = useStore();
   // Navigation — defaults to the store-backed Command Center (first-milestone experience).
   const [activeTab, setActiveTab] = useState<TabType>('COMMAND');
+  useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, [activeTab]);
 
   // Academic Knowledge Graph State
   const institutions = store.institutions;
@@ -252,7 +254,7 @@ function AppShell() {
   const currentInstitution = institutions.find((i) => i.id === currentCourse?.institutionId);
 
   return (
-    <div className="min-h-screen bg-[#FDFDFD] text-neutral-900 font-sans antialiased selection:bg-amber-100 selection:text-amber-900">
+    <div className="personal-workspace min-h-screen text-neutral-900 font-sans antialiased selection:bg-teal-100 selection:text-teal-900 lg:pl-64">
       {/* Universal Academic Navbar */}
       <Navbar
         activeTab={activeTab}
@@ -268,12 +270,13 @@ function AppShell() {
         onQuickFocus={() => handleStartFocus(undefined, 20)}
       />
 
-      {activeTab === 'MATRIX' && <MatrixView />}
+      {activeTab === 'MATRIX' && <div id="workspace-main" tabIndex={-1}><MatrixView /></div>}
 
       {/* Main Content View Container */}
       {activeTab !== 'MATRIX' && (
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-28 md:pb-24">
-        {activeTab === 'COMMAND' && <CommandCenterView />}
+      <main id="workspace-main" tabIndex={-1} className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-8 pb-28 md:pb-24">
+        {activeTab === 'COMMAND' && <CommandCenterView onNavigate={setActiveTab} />}
+        {activeTab === 'SYLLABUS' && <SyllabusPanel />}
 
         {activeTab === 'ASK' && <AskFishView />}
 

@@ -1,9 +1,128 @@
 @import "tailwindcss";
 
+.personal-workspace {
+  background: #f4f6f0;
+}
+.workspace-title {
+  font-family: var(--font-serif);
+  font-size: clamp(1.9rem, 3vw, 2.65rem);
+  line-height: 1.15;
+  letter-spacing: -0.035em;
+  color: #193e37;
+}
+.workspace-eyebrow {
+  margin-bottom: 0.75rem;
+  color: #5c7367;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.workspace-hero {
+  border-radius: 1.5rem;
+  background:
+    radial-gradient(ellipse at top right, #406f5e, transparent 70%), #173f36;
+  box-shadow: 0 12px 28px -20px #173f3666;
+}
+.workspace-card {
+  border: 1px solid #dfe6df;
+  border-radius: 1rem;
+  background: #fffefa;
+  padding: 1.35rem;
+  box-shadow: 0 3px 10px -8px #193e3755;
+}
+.workspace-nav-link {
+  display: flex;
+  min-height: 44px;
+  width: 100%;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 0.65rem;
+  padding: 0.6rem 0.8rem;
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #53625b;
+}
+.workspace-nav-link:hover {
+  background: #f0f4eb;
+  color: #193e37;
+}
+.workspace-nav-link.is-active {
+  background: #e6eee0;
+  color: #234f40;
+  font-weight: 700;
+}
+.workspace-button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid #dfe6df;
+  border-radius: 0.65rem;
+  background: #fffefa;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #38554b;
+  cursor: pointer;
+}
+.workspace-button:hover {
+  border-color: #789c88;
+  background: #f0f4eb;
+}
+.workspace-button-primary {
+  border-color: #285b4d;
+  background: #285b4d;
+  color: white;
+}
+.workspace-button-primary:hover {
+  background: #1c463b;
+  color: white;
+}
+.workspace-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.workspace-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  border: 1px solid #d7dfd6;
+  border-radius: 0.65rem;
+  background: #fff;
+  padding: 0.65rem 0.8rem;
+  font-size: 0.85rem;
+  color: #293c33;
+}
+.personal-workspace button:focus-visible,
+.personal-workspace input:focus-visible,
+.personal-workspace select:focus-visible,
+.personal-workspace textarea:focus-visible {
+  outline: 2px solid #137365;
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .personal-workspace *,
+  .personal-workspace *::before,
+  .personal-workspace *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @theme {
-  --font-serif: 'Fraunces', 'Cinzel', Georgia, Cambria, 'Times New Roman', serif;
-  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-serif:
+    "Fraunces", "Cinzel", Georgia, Cambria, "Times New Roman", serif;
+  --font-sans:
+    "Plus Jakarta Sans", system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
 }
 
 /* Custom APA hanging indent */
