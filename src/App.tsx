@@ -41,7 +41,8 @@ import {
   Citation,
   AcademicMemoryNode,
   StudentProfile,
-  AuthorshipDossier
+  AuthorshipDossier,
+  CoachMessage
 } from './types';
 
 function AppShell() {
@@ -75,6 +76,12 @@ function AppShell() {
 
   // Modals & Drawers
   const [isCompanionOpen, setIsCompanionOpen] = useState(false);
+  const [companionRole, setCompanionRole] = useState<CoachMessage['role']>('study_coach');
+  const openCompanionWithRole = (role: string) => {
+    const roles: CoachMessage['role'][] = ['study_coach', 'research_librarian', 'apa_coach', 'assignment_coach', 'access_coach', 'body_double'];
+    setCompanionRole(roles.includes(role as CoachMessage['role']) ? role as CoachMessage['role'] : 'study_coach');
+    setIsCompanionOpen(true);
+  };
   const [isAnamAvatarOpen, setIsAnamAvatarOpen] = useState(false);
   const [isNotionImportOpen, setIsNotionImportOpen] = useState(false);
   const archiveInputRef = useRef<HTMLInputElement>(null);
@@ -370,7 +377,9 @@ function AppShell() {
             initialAssignmentId={focusAssignmentId || selectedAssignmentId}
             initialMinutes={focusMinutes}
             onOpenWritingStudio={handleOpenWritingStudio}
-            onOpenCompanionWithRole={(role) => setIsCompanionOpen(true)}
+            onOpenCompanionWithRole={openCompanionWithRole}
+            onOpenAvatar={() => setIsAnamAvatarOpen(true)}
+            onSelectAssignment={setSelectedAssignmentId}
           />
         )}
 
@@ -380,7 +389,7 @@ function AppShell() {
             courses={courses}
             institutions={institutions}
             onUpdateProfile={handleUpdateProfile}
-            onOpenCompanionWithRole={(role) => setIsCompanionOpen(true)}
+            onOpenCompanionWithRole={openCompanionWithRole}
           />
         )}
       </main>
@@ -389,12 +398,14 @@ function AppShell() {
       {/* AI Companion Role-Based Coaching Drawer */}
       <CompanionDrawer
         isOpen={isCompanionOpen}
+        initialRole={companionRole}
         onClose={() => setIsCompanionOpen(false)}
         currentAssignment={currentAssignment}
         currentCourse={currentCourse}
         citations={citations}
         onStartFocus={handleStartFocus}
         onOpenWritingStudio={handleOpenWritingStudio}
+        onOpenAnamAvatar={() => setIsAnamAvatarOpen(true)}
       />
 
       {/* Syllabus Intelligence Modal */}

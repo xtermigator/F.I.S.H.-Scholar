@@ -73,7 +73,7 @@ const GROUPS: {
     tabs: [
       { id: "ASK", label: "Ask FISH", icon: MessageSquareQuote },
       { id: "TALK", label: "Talk to FISH", icon: Video },
-      { id: "FOCUS", label: "Focus session", icon: Timer },
+      { id: "FOCUS", label: "Body double", icon: Timer },
       { id: "CHAT", label: "Study chat", icon: MessageSquare },
       { id: "REPORTS", label: "Reports", icon: FileText },
       { id: "ME", label: "My profile", icon: User },

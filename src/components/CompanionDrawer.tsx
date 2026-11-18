@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   X,
   Send,
@@ -25,6 +25,7 @@ interface CompanionDrawerProps {
   onStartFocus: (assignmentId?: string, minutes?: number) => void;
   onOpenWritingStudio: (assignmentId: string) => void;
   onOpenAnamAvatar?: () => void;
+  initialRole?: CoachMessage['role'];
 }
 
 type CoachRole = 'study_coach' | 'research_librarian' | 'apa_coach' | 'assignment_coach' | 'access_coach' | 'body_double';
@@ -37,9 +38,11 @@ export const CompanionDrawer: React.FC<CompanionDrawerProps> = ({
   citations,
   onStartFocus,
   onOpenWritingStudio,
-  onOpenAnamAvatar
+  onOpenAnamAvatar,
+  initialRole = 'study_coach'
 }) => {
   const [selectedRole, setSelectedRole] = useState<CoachRole>('study_coach');
+  useEffect(() => { if (isOpen) setSelectedRole(initialRole); }, [isOpen, initialRole]);
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -48,13 +51,8 @@ export const CompanionDrawer: React.FC<CompanionDrawerProps> = ({
       id: 'm1',
       sender: 'coach',
       role: 'study_coach',
-      text: "Good afternoon, Eric. You have 3 items on deck across Mississippi State, CUNY SPS, and UF today. Your highest leverage next step is the ED 9413 peer response (approx 20 mins). Let's get it off your plate!",
+      text: "What would help you take the next step? Share the task you are working on, or choose Body Double for a gentle check-in.",
       timestamp: 'Just now',
-      suggestedAction: {
-        label: 'Start 20m Focus Block on ED 9413',
-        actionType: 'start_focus',
-        payload: { assignmentId: 'asg-msu-peer', minutes: 20 }
-      }
     }
   ]);
 
