@@ -21,7 +21,8 @@ import {
   ArrowRight,
   Database
 } from 'lucide-react';
-import { createClient, AnamEvent } from '@anam-ai/js-sdk';
+import { AnamEvent } from '@anam-ai/js-sdk';
+import { connectAvatar } from '../state/avatarConnection';
 import { Citation, Course, Assignment, AcademicMemoryNode } from '../types';
 
 interface AnamAvatarModalProps {
@@ -47,6 +48,8 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const anamClientRef = useRef<any>(null);
+  const connectionAttempt = useRef<AbortController | null>(null);
+  const connectionClose = useRef<(() => void) | null>(null);
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -58,7 +61,7 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
   const [transcript, setTranscript] = useState('');
   const [inputText, setInputText] = useState('');
   const [lastAvatarReply, setLastAvatarReply] = useState(
-    "Greetings, Eric. I'm Dr. Fisher, your F.I.S.H. Scholar Academic Avatar. I can discuss your research across Mississippi State, CUNY SPS, and UF, extract APA citations directly to your vault, or generate unified cross-paper synthesis reports."
+    "Choose a small goal or tell me where you are getting stuck. We can work through the next step together."
   );
 
   // Active extracted data from conversation
@@ -77,59 +80,46 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
 
-    fetch('/api/anam/status')
-      .then((res) => res.json())
+    const controller = new AbortController();
+    setConnectionError(null);
+    setHasApiKey(false);
+    fetch('/api/anam/status', { signal: controller.signal })
+      .then((res) => { if (!res.ok) throw new Error('Avatar availability could not be checked.'); return res.json(); })
       .then((data) => {
-        setHasApiKey(data.configured);
+        if (controller.signal.aborted) return;
+        setHasApiKey(Boolean(data.configured && !data.needsPersonaConfig));
         if (data.personaId) {
           setActivePersonaId(data.personaId);
         }
-        if (data.configured) {
-          startAnamStream();
-        }
+        if (data.needsPersonaConfig) setConnectionError('Finish the avatar connection in Settings before starting video.');
       })
       .catch((err) => {
-        console.error('Error checking Anam status:', err);
+        if (!controller.signal.aborted) setConnectionError('Avatar availability could not be checked. Your focus session is still available.');
       });
 
     return () => {
+      controller.abort();
       stopAnamStream();
     };
   }, [isOpen]);
 
   // Start Anam Stream using session token
   const startAnamStream = async () => {
+    if (connectionAttempt.current || anamClientRef.current) return;
+    const controller = new AbortController();
+    connectionAttempt.current = controller;
     setConnecting(true);
     setConnectionError(null);
     try {
-      const res = await fetch('/api/anam/session-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentName: 'Eric Fishon',
-          currentContext: {
-            coursesCount: courses.length,
-            citationsCount: citations.length,
-            topAssignment: assignments[0]?.title
-          }
-        })
-      });
-
-      const data = await res.json();
-      if (data.success && data.sessionToken) {
-        if (data.personaId) {
-          setActivePersonaId(data.personaId);
-        }
-        // Initialize client with temporary session token
-        const client = createClient(data.sessionToken);
+      const connection = await connectAvatar('anam-video-stream', { signal: controller.signal });
+      if (!controller.signal.aborted) {
+        const client = connection.client;
+        connectionClose.current = connection.close;
         anamClientRef.current = client;
-
-        // Stream video to element
-        await client.streamToVideoElement('anam-video-stream');
         setIsStreaming(true);
 
         // Listen to events
-        client.addListener(AnamEvent.MESSAGE_HISTORY_UPDATED, (history: any) => {
+        client.addListener?.(AnamEvent.MESSAGE_HISTORY_UPDATED, (history: any) => {
           if (Array.isArray(history) && history.length > 0) {
             const lastMsg = history[history.length - 1];
             if (lastMsg && lastMsg.content) {
@@ -137,28 +127,27 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
             }
           }
         });
-      } else {
-        setConnectionError(data.error || data.message || 'Unable to establish Anam session token.');
       }
     } catch (error: any) {
-      console.error('Failed to start Anam stream:', error);
-      setConnectionError(error.message || 'Network error connecting to Anam streaming server.');
+      if (!controller.signal.aborted) setConnectionError(error.message || 'The avatar could not connect. Please try again.');
     } finally {
-      setConnecting(false);
+      if (connectionAttempt.current === controller) {
+        connectionAttempt.current = null;
+        setConnecting(false);
+      }
     }
   };
 
   const stopAnamStream = () => {
-    try {
-      if (anamClientRef.current) {
-        if (typeof anamClientRef.current.stopStreaming === 'function') {
-          anamClientRef.current.stopStreaming();
-        }
-        anamClientRef.current = null;
-      }
-    } catch (e) {
-      console.error('Error stopping stream:', e);
-    }
+    connectionAttempt.current?.abort();
+    connectionAttempt.current = null;
+    connectionClose.current?.();
+    connectionClose.current = null;
+    anamClientRef.current = null;
+    try { recognitionRef.current?.stop(); } catch { /* Voice input already stopped. */ }
+    recognitionRef.current = null;
+    setIsListening(false);
+    setConnecting(false);
     setIsStreaming(false);
   };
 
@@ -221,11 +210,6 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
     setActionLoading(true);
 
     try {
-      // 1. If live Anam client is active, send talk command
-      if (anamClientRef.current && typeof anamClientRef.current.talk === 'function') {
-        await anamClientRef.current.talk(textToSend);
-      }
-
       // 2. Query Companion API for response & scholar tool actions
       const res = await fetch('/api/gemini/companion-chat', {
         method: 'POST',
@@ -244,6 +228,7 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
       const data = await res.json();
       if (data.reply) {
         setLastAvatarReply(data.reply);
+        if (anamClientRef.current?.talk) await anamClientRef.current.talk(data.reply);
       }
 
       // 3. Auto-detect if user requested citation extraction or cross-paper synthesis
@@ -389,21 +374,21 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold text-white font-serif tracking-tight">
-                  Dr. Fisher • Anam.ai Scholar Avatar
+                  FISH companion · live avatar
                 </h2>
                 <span
                   className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
-                    hasApiKey
+                    isStreaming
                       ? 'border-emerald-500/30 bg-emerald-950/60 text-emerald-400'
                       : 'border-amber-500/30 bg-amber-950/60 text-amber-300'
                   }`}
                 >
                   <span
                     className={`h-1.5 w-1.5 rounded-full ${
-                      hasApiKey ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                      isStreaming ? 'bg-emerald-400' : 'bg-amber-400'
                     }`}
                   />
-                  {hasApiKey ? 'Live WebRTC Streaming' : 'Adaptive Audio Avatar Mode'}
+                  {isStreaming ? 'Video connected' : connecting ? 'Connecting video…' : 'Video disconnected'}
                 </span>
                 {activePersonaId && (
                   <span className="hidden sm:inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-mono border border-indigo-500/30 bg-indigo-950/60 text-indigo-300">
@@ -431,6 +416,7 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
                 <span>{connecting ? 'Connecting...' : 'Connect Video'}</span>
               </button>
             )}
+            {isStreaming && <button onClick={stopAnamStream} className="rounded-lg border border-neutral-700 px-3 py-2 text-xs">End video</button>}
             <button
               onClick={() => setIsMuted(!isMuted)}
               className="rounded-lg border border-neutral-800 bg-neutral-900 p-2 text-neutral-300 hover:bg-neutral-800 hover:text-white cursor-pointer"
@@ -441,6 +427,7 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
             </button>
             <button
               onClick={onClose}
+              aria-label="Close live avatar"
               className="rounded-lg p-2 text-neutral-400 hover:bg-neutral-800 hover:text-white cursor-pointer transition-colors"
               id="anam-modal-close"
             >
@@ -493,15 +480,14 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
                       </span>
                     )}
                   </div>
-                  <h3 className="text-sm font-semibold text-white font-serif">Dr. Fisher, Ph.D.</h3>
+                  <h3 className="text-sm font-semibold text-white font-serif">FISH companion</h3>
                   <p className="mt-1 text-xs text-neutral-400 max-w-xs">
                     Universal Design • Critical Disability Studies • Transition Ecology
                   </p>
 
                   {!hasApiKey && (
                     <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-900/80 px-3 py-2 text-[11px] text-neutral-400">
-                      💡 To enable photorealistic HD video avatar streaming, configure{' '}
-                      <code className="text-amber-300">ANAM_AI_API_KEY</code> in Settings.
+                      Add and complete your avatar connection in Settings to enable video.
                     </div>
                   )}
                 </div>
@@ -509,8 +495,8 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
 
               {/* Live Status Overlay */}
               <div className="absolute bottom-3 left-3 flex items-center gap-1.5 rounded-md bg-black/60 px-2 py-1 text-[10px] text-neutral-300 backdrop-blur-md">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Scholar OS Connected</span>
+                <span className={`h-2 w-2 rounded-full ${isStreaming ? 'bg-emerald-400' : 'bg-neutral-500'}`} />
+                <span>{isStreaming ? `Avatar connected · ${isListening ? 'voice input on' : 'microphone off'}` : 'Avatar disconnected'}</span>
               </div>
             </div>
 
@@ -518,7 +504,7 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
             <div className="mt-4 flex-1 overflow-y-auto rounded-xl border border-neutral-800 bg-neutral-900/60 p-3.5 text-xs text-neutral-200">
               <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-400 mb-1">
                 <Sparkles className="h-3 w-3" />
-                <span>Dr. Fisher:</span>
+                <span>FISH companion:</span>
               </div>
               <p className="leading-relaxed">{lastAvatarReply}</p>
 
@@ -741,7 +727,7 @@ export const AnamAvatarModal: React.FC<AnamAvatarModalProps> = ({
                 <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-neutral-800 p-8 text-center text-neutral-500">
                   <Layers className="h-8 w-8 text-neutral-600 mb-2" />
                   <p className="text-xs">
-                    Discuss any research topic, author, or question with Dr. Fisher.
+                    Discuss your next step, a source, or a research question with FISH.
                   </p>
                   <p className="text-[11px] text-neutral-600 mt-1">
                     Citations, synthesis drafts, and data scripts will appear here in real time.
