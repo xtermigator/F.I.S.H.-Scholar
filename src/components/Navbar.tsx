@@ -1,30 +1,31 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from "react";
 import {
-  Sparkles,
+  LayoutDashboard,
   CheckSquare,
   Library,
   Feather,
   Timer,
   User,
-  Zap,
   MessageSquareQuote,
   GraduationCap,
   MessagesSquare,
-  Search as SearchIcon,
+  Search,
   FileText,
   CalendarDays,
   Brain,
   Video,
   MessageSquare,
   BookOpen,
-  Database,
   Download,
   UploadCloud,
   Menu,
   X,
-  Settings as SettingsIcon,
-} from 'lucide-react';
-import { TabType, Institution } from '../types';
+  Settings,
+  FileUp,
+  ChevronRight,
+  Database,
+} from "lucide-react";
+import type { TabType, Institution } from "../types";
 
 interface NavbarProps {
   activeTab: TabType;
@@ -34,322 +35,330 @@ interface NavbarProps {
   setSelectedInstitutionId: (id: string | null) => void;
   onOpenCompanion: () => void;
   onQuickFocus: () => void;
+  onOpenAnamAvatar?: () => void;
+  onOpenNotionImport?: () => void;
+  onExportArchive?: () => void;
+  onImportArchiveClick?: () => void;
+  lastSavedTime?: string;
+  isSaving?: boolean;
 }
 
-interface TabDef {
-  id: TabType;
+const GROUPS: {
   label: string;
-  icon: React.ComponentType<{ className?: string }>;
-}
-
-const TABS: TabDef[] = [
-  { id: 'COMMAND', label: 'COMMAND', icon: Sparkles },
-  { id: 'ASK', label: 'ASK FISH', icon: MessageSquareQuote },
-  { id: 'TALK', label: 'TALK', icon: Video },
-  { id: 'SEARCH', label: 'SEARCH', icon: SearchIcon },
-  { id: 'DISCUSS', label: 'DISCUSS', icon: MessagesSquare },
-  { id: 'CALENDAR', label: 'CALENDAR', icon: CalendarDays },
-  { id: 'COURSES', label: 'COURSES', icon: GraduationCap },
-  { id: 'ASSIGNMENTS', label: 'ASSIGNMENTS', icon: CheckSquare },
-  { id: 'LIBRARY', label: 'LIBRARY', icon: Library },
-  { id: 'STUDY', label: 'STUDY', icon: Brain },
-  { id: 'WRITE', label: 'WRITE', icon: Feather },
-  { id: 'FOCUS', label: 'FOCUS', icon: Timer },
-  { id: 'CHAT', label: 'CHAT', icon: MessageSquare },
-  { id: 'MATRIX', label: 'MATRIX', icon: BookOpen },
-  { id: 'ME', label: 'ME', icon: User },
-  { id: 'REPORTS', label: 'REPORTS', icon: FileText },
-  { id: 'SETTINGS', label: 'SETTINGS', icon: SettingsIcon },
+  tabs: { id: TabType; label: string; icon: typeof LayoutDashboard }[];
+}[] = [
+  {
+    label: "My workspace",
+    tabs: [
+      { id: "COMMAND", label: "Overview", icon: LayoutDashboard },
+      { id: "COURSES", label: "Courses", icon: GraduationCap },
+      { id: "SYLLABUS", label: "Syllabus intake", icon: FileUp },
+      { id: "ASSIGNMENTS", label: "Assignments", icon: CheckSquare },
+      { id: "DISCUSS", label: "Discussions", icon: MessagesSquare },
+      { id: "CALENDAR", label: "Calendar", icon: CalendarDays },
+    ],
+  },
+  {
+    label: "Research & writing",
+    tabs: [
+      { id: "LIBRARY", label: "Source library", icon: Library },
+      { id: "MATRIX", label: "Literature matrix", icon: BookOpen },
+      { id: "WRITE", label: "Writing studio", icon: Feather },
+      { id: "STUDY", label: "Study tools", icon: Brain },
+      { id: "SEARCH", label: "Search workspace", icon: Search },
+    ],
+  },
+  {
+    label: "Support & progress",
+    tabs: [
+      { id: "ASK", label: "Ask FISH", icon: MessageSquareQuote },
+      { id: "TALK", label: "Talk to FISH", icon: Video },
+      { id: "FOCUS", label: "Body double", icon: Timer },
+      { id: "CHAT", label: "Study chat", icon: MessageSquare },
+      { id: "REPORTS", label: "Reports", icon: FileText },
+      { id: "ME", label: "My profile", icon: User },
+      { id: "SETTINGS", label: "Settings", icon: Settings },
+    ],
+  },
 ];
-
-// Mobile bottom-bar priority (accessibility steering: Today→Upcoming→Quick Add→Courses→Ask).
-// Quick Add is a separate FAB, so the bar surfaces the 4 most-used destinations + "More".
-const MOBILE_PRIMARY: TabType[] = ['COMMAND', 'ASK', 'CALENDAR', 'COURSES'];
+const TABS = GROUPS.flatMap((group) => group.tabs);
+const MOBILE = ["COMMAND", "COURSES", "SYLLABUS", "FOCUS"];
 
 export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   setActiveTab,
   institutions,
-  selectedInstitutionId,
-  setSelectedInstitutionId,
   onOpenCompanion,
-  onOpenAnamAvatar,
   onQuickFocus,
+  onOpenAnamAvatar,
   onOpenNotionImport,
   onExportArchive,
   onImportArchiveClick,
-  lastSavedTime = 'Just now',
-  isSaving = false,
 }) => {
   const [moreOpen, setMoreOpen] = useState(false);
-  const [showStorageMenu, setShowStorageMenu] = useState(false);
-
-  // Close the "More" sheet whenever the active tab changes.
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const sheet = useRef<HTMLDivElement>(null);
+  useEffect(() => setMoreOpen(false), [activeTab]);
   useEffect(() => {
-    setMoreOpen(false);
-  }, [activeTab]);
+    if (!moreOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    sheet.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => {
+      document.body.style.overflow = previous;
+      moreButton.current?.focus();
+    };
+  }, [moreOpen]);
 
-  const primaryTabs = TABS.filter((t) => MOBILE_PRIMARY.includes(t.id));
+  const navigation = (mobile = false) =>
+    GROUPS.map((group) => (
+      <div key={group.label} className="mt-5 first:mt-0">
+        <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-neutral-500">
+          {group.label}
+        </p>
+        <div className={mobile ? "grid grid-cols-2 gap-1" : "space-y-0.5"}>
+          {group.tabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              id={`${mobile ? "mobile" : "nav-tab"}-${id.toLowerCase()}`}
+              onClick={() => setActiveTab(id)}
+              aria-current={activeTab === id ? "page" : undefined}
+              className={`workspace-nav-link ${activeTab === id ? "is-active" : ""}`}
+            >
+              <Icon className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+              <span>{label}</span>
+              {activeTab === id && (
+                <span className="ml-auto h-1.5 w-1.5 rounded-full bg-teal-700" />
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+    ));
 
-  const renderTabButton = (tab: TabDef, variant: 'top' | 'bottom' | 'sheet') => {
-    const Icon = tab.icon;
-    const isActive = activeTab === tab.id;
-    if (variant === 'bottom') {
-      return (
-        <button
-          key={tab.id}
-          onClick={() => setActiveTab(tab.id)}
-          id={`nav-bottom-${tab.id.toLowerCase()}`}
-          aria-current={isActive ? 'page' : undefined}
-          className={`flex flex-1 flex-col items-center gap-0.5 py-1.5 text-[10px] font-semibold tracking-wide focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500 ${
-            isActive ? 'text-neutral-900' : 'text-neutral-500'
-          }`}
-        >
-          <Icon className={`h-5 w-5 ${isActive ? 'text-amber-600' : 'text-neutral-500'}`} />
-          <span>{tab.label === 'ASK FISH' ? 'ASK' : tab.label}</span>
+  const tools = (
+    <>
+      {onExportArchive && (
+        <button onClick={onExportArchive} className="workspace-button">
+          <Download className="h-4 w-4" />
+          Backup
         </button>
-      );
-    }
-    if (variant === 'sheet') {
-      return (
-        <button
-          key={tab.id}
-          onClick={() => setActiveTab(tab.id)}
-          aria-current={isActive ? 'page' : undefined}
-          className={`flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500 ${
-            isActive ? 'bg-neutral-900 text-white' : 'text-neutral-700 hover:bg-neutral-100'
-          }`}
-        >
-          <Icon className={`h-5 w-5 ${isActive ? 'text-amber-400' : 'text-neutral-500'}`} />
-          {tab.label}
+      )}
+      {onImportArchiveClick && (
+        <button onClick={onImportArchiveClick} className="workspace-button">
+          <UploadCloud className="h-4 w-4" />
+          Restore
         </button>
-      );
-    }
-    // top (desktop)
-    return (
-      <button
-        key={tab.id}
-        onClick={() => setActiveTab(tab.id)}
-        id={`nav-tab-${tab.id.toLowerCase()}`}
-        aria-current={isActive ? 'page' : undefined}
-        className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold tracking-wider transition-all duration-150 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500 ${
-          isActive ? 'bg-neutral-900 text-white shadow-xs' : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
-        }`}
-      >
-        <Icon className={`h-3.5 w-3.5 ${isActive ? 'text-amber-400' : 'text-neutral-500'}`} />
-        <span>{tab.label}</span>
-      </button>
-    );
-  };
+      )}
+      {onOpenNotionImport && (
+        <button
+          onClick={() => {
+            setMoreOpen(false);
+            onOpenNotionImport();
+          }}
+          className="workspace-button"
+        >
+          <Database className="h-4 w-4" />
+          Notion
+        </button>
+      )}
+      {onOpenAnamAvatar && (
+        <button
+          onClick={() => {
+            setMoreOpen(false);
+            onOpenAnamAvatar();
+          }}
+          className="workspace-button"
+        >
+          <Video className="h-4 w-4" />
+          Live avatar
+        </button>
+      )}
+    </>
+  );
 
   return (
     <>
-      <header className="sticky top-0 z-40 border-b border-neutral-200 bg-white/95 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
-          {/* Brand */}
+      <a
+        href="#workspace-main"
+        className="sr-only z-[70] rounded-lg bg-white p-3 text-teal-900 focus:not-sr-only focus:fixed focus:left-4 focus:top-4"
+      >
+        Skip to content
+      </a>
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r border-[#dfe6df] bg-[#fdfefb] lg:flex">
+        <button
+          onClick={() => setActiveTab("COMMAND")}
+          id="brand-header-button"
+          aria-label="F.I.S.H. Scholar home"
+          className="mx-5 mt-5 rounded-xl text-left"
+        >
+          <img
+          src="/assets/fish-edu-logo.webp"
+            alt="F.I.S.H. EDU — Removing barriers. Revealing potential. A F.I.S.H. Access Lab initiative."
+          width={576}
+          height={384}
+            className="mx-auto h-auto w-36 rounded-lg"
+          />
+          <span className="mt-3 block font-serif text-2xl font-semibold text-[#193e37]">
+            FISH Scholar<span className="text-teal-600">.</span>
+          </span>
+          <span className="mt-1 block text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">
+            Personal academic workspace
+          </span>
+        </button>
+        <nav
+          aria-label="Primary"
+          className="mt-6 flex-1 overflow-y-auto px-3 pb-6"
+        >
+          {navigation()}
+        </nav>
+        <div className="border-t border-[#dfe6df] px-6 py-4 text-xs text-neutral-500">
+          Your ideas. Your voice.
+        </div>
+      </aside>
+      <header className="sticky top-0 z-30 border-b border-[#dfe6df] bg-[#fdfefb]/95 backdrop-blur-md">
+        <div className="mx-auto flex min-h-20 max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-8">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => setActiveTab('COMMAND')}
-              className="flex items-center gap-2.5 text-left group transition-all cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500 rounded-lg"
-              id="brand-header-button"
+              onClick={() => setActiveTab("COMMAND")}
+              className="rounded-lg lg:hidden"
+              aria-label="F.I.S.H. Scholar home"
             >
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-neutral-900 text-amber-400 shadow-xs group-hover:scale-105 transition-transform font-serif font-bold text-lg">
-                F
-              </div>
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="font-serif font-bold tracking-tight text-neutral-900 text-base">
-                    F.I.S.H. <span className="text-amber-700 font-sans font-semibold text-sm">Scholar</span>
-                  </span>
-                  <span className="hidden rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 border border-amber-200 sm:inline">
-                    Academic OS
-                  </span>
-                </div>
-                <p className="text-[10px] text-neutral-500 font-sans hidden sm:block">
-                  Focus • Integrity • Synthesis • Harmony
-                </p>
-              </div>
+              <img
+              src="/assets/fish-edu-logo.webp"
+                alt="F.I.S.H. EDU"
+              width={576}
+              height={384}
+                className="h-auto w-20 rounded-lg"
+              />
             </button>
-
-            {/* Quick Institution Badges (desktop only) */}
-            <div className="hidden lg:flex items-center gap-1.5 ml-4 pl-4 border-l border-neutral-200">
-              <button
-                onClick={() => setSelectedInstitutionId(null)}
-                className={`px-2.5 py-0.5 rounded-lg text-xs transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500 ${
-                  selectedInstitutionId === null
-                    ? 'bg-neutral-100 text-neutral-900 font-semibold border border-neutral-200'
-                    : 'text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50'
-                }`}
-                id="inst-filter-all"
+            <div>
+              <p className="hidden items-center gap-2 text-xs text-neutral-500 lg:flex">
+                My workspace{" "}
+                <ChevronRight className="h-3 w-3" aria-hidden="true" />
+                <span className="text-[#193e37]">
+                  {TABS.find((tab) => tab.id === activeTab)?.label ??
+                    "Overview"}
+                </span>
+              </p>
+              <p className="font-serif text-xl text-[#193e37] lg:hidden">
+                FISH Scholar
+              </p>
+              <div
+                className="mt-1 flex flex-wrap gap-2 text-[11px] text-neutral-500"
+                aria-label="My universities"
               >
-                All Schools
-              </button>
-              {institutions.map((inst) => (
-                <button
-                  key={inst.id}
-                  onClick={() => setSelectedInstitutionId(selectedInstitutionId === inst.id ? null : inst.id)}
-                  className={`px-2 py-0.5 rounded-lg text-xs flex items-center gap-1 transition-all border cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500 ${
-                    selectedInstitutionId === inst.id
-                      ? 'bg-amber-50 text-amber-900 border-amber-300 font-semibold shadow-xs'
-                      : 'bg-white border-neutral-200 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-50'
-                  }`}
-                  id={`inst-filter-${inst.id}`}
-                  title={inst.name}
-                >
-                  <span>{inst.logo}</span>
-                  <span className="font-medium">{inst.shortName}</span>
-                </button>
-              ))}
+                {institutions.map((school) => (
+                  <span key={school.id}>{school.shortName}</span>
+                ))}
+              </div>
             </div>
           </div>
-
-          {/* Desktop tab row */}
-          <nav aria-label="Primary" className="hidden items-center gap-1 overflow-x-auto py-1 scrollbar-none md:flex">
-            {TABS.map((tab) => renderTabButton(tab, 'top'))}
-          </nav>
-
-          {/* Quick Actions */}
-          <div className="flex items-center gap-2">
-            {/* Storage & Auto-save Status Indicator (from main) */}
-            <div className="relative hidden xl:block">
-              <button
-                onClick={() => setShowStorageMenu(!showStorageMenu)}
-                className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-neutral-50/80 px-2.5 py-1 text-[11px] font-medium text-neutral-600 hover:bg-neutral-100 transition-all cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
-                title="Work is persistently saved locally. Click for backup archive options."
-                id="storage-status-btn"
-              >
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    isSaving ? 'bg-amber-500 animate-ping' : 'bg-emerald-500'
-                  }`}
-                />
-                <span className="truncate max-w-[100px]">
-                  {isSaving ? 'Saving...' : `Saved ${lastSavedTime}`}
-                </span>
-              </button>
-              {showStorageMenu && (
-                <div className="absolute right-0 mt-1 w-56 rounded-xl border border-neutral-200 bg-white p-2 shadow-xl z-50 text-xs space-y-1">
-                  <div className="px-2 py-1 text-[10px] font-semibold text-neutral-500 uppercase">
-                    Data Persistence & Archives
-                  </div>
-                  <button
-                    onClick={() => {
-                      setShowStorageMenu(false);
-                      onExportArchive?.();
-                    }}
-                    className="flex items-center gap-2 w-full rounded-lg px-2.5 py-1.5 text-left text-neutral-700 hover:bg-neutral-100 cursor-pointer"
-                  >
-                    <Download className="h-3.5 w-3.5 text-amber-700" />
-                    <span>Download Archive (.json)</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowStorageMenu(false);
-                      onImportArchiveClick?.();
-                    }}
-                    className="flex items-center gap-2 w-full rounded-lg px-2.5 py-1.5 text-left text-neutral-700 hover:bg-neutral-100 cursor-pointer"
-                  >
-                    <UploadCloud className="h-3.5 w-3.5 text-blue-700" />
-                    <span>Restore / Load Archive</span>
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Notion Importer Button (from main) */}
-            {onOpenNotionImport && (
-              <button
-                onClick={onOpenNotionImport}
-                id="navbar-notion-import-btn"
-                className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-neutral-800 hover:bg-neutral-50 hover:border-neutral-300 transition-all cursor-pointer shadow-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
-                title="Import To-Dos, Assignments, and Papers from Notion"
-              >
-                <Database className="h-3.5 w-3.5 text-amber-700" />
-                <span className="hidden md:inline">Notion</span>
-              </button>
-            )}
-
-            {/* Live Avatar (from main) */}
-            {onOpenAnamAvatar && (
-              <button
-                onClick={onOpenAnamAvatar}
-                id="navbar-open-anam-avatar-btn"
-                className="flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50/80 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 hover:border-amber-400 transition-all cursor-pointer shadow-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
-                title="Launch Anam.ai Digital Scholar Avatar"
-              >
-                <Video className="h-3.5 w-3.5 text-amber-700 animate-pulse" />
-                <span className="hidden lg:inline">Live Avatar</span>
-              </button>
-            )}
-
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="mr-1 hidden items-center gap-1.5 text-[11px] text-neutral-500 xl:flex">
+              <span className="h-1.5 w-1.5 rounded-full bg-teal-600" />
+              Saved on this device
+            </span>
             <button
               onClick={onQuickFocus}
-              id="navbar-quick-focus-btn"
-              className="hidden sm:flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 px-3 py-1.5 text-xs font-bold text-neutral-950 shadow-xs transition-all active:scale-95 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-900"
+              className="workspace-button hidden sm:inline-flex"
             >
-              <Zap className="h-3.5 w-3.5 fill-neutral-950 text-neutral-950" />
-              <span>Focus (20m)</span>
+              <Timer className="h-4 w-4" aria-hidden="true" />
+              Focus
             </button>
-
             <button
               onClick={onOpenCompanion}
-              id="navbar-open-companion-btn"
-              className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 hover:text-neutral-900 hover:border-neutral-300 transition-all cursor-pointer shadow-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+              className="workspace-button workspace-button-primary"
             >
-              <MessageSquareQuote className="h-3.5 w-3.5 text-amber-600" />
-              <span className="hidden md:inline">AI Coach</span>
+              <MessageSquareQuote className="h-4 w-4" aria-hidden="true" />
+              Ask FISH
             </button>
           </div>
         </div>
       </header>
-
-      {/* Mobile bottom navigation bar */}
+      <div className="hidden border-b border-[#dfe6df] bg-white/40 lg:block">
+        <div className="mx-auto flex max-w-7xl flex-wrap gap-2 px-8 py-2">
+          {tools}
+        </div>
+      </div>
       <nav
         aria-label="Primary mobile"
-        className="fixed inset-x-0 bottom-0 z-40 flex items-stretch border-t border-neutral-200 bg-white/95 backdrop-blur-md md:hidden"
+        className="fixed inset-x-0 bottom-0 z-40 flex border-t border-[#dfe6df] bg-[#fdfefb] px-2 pb-[env(safe-area-inset-bottom)] lg:hidden"
       >
-        {primaryTabs.map((tab) => renderTabButton(tab, 'bottom'))}
+        {TABS.filter((tab) => MOBILE.includes(tab.id)).map(
+          ({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setActiveTab(id)}
+              aria-current={activeTab === id ? "page" : undefined}
+              className={`flex min-h-16 flex-1 flex-col items-center justify-center gap-1 text-[10px] font-semibold ${activeTab === id ? "text-teal-800" : "text-neutral-500"}`}
+            >
+              <Icon className="h-5 w-5" aria-hidden="true" />
+              {id === "SYLLABUS"
+                ? "Syllabus"
+                : id === "FOCUS"
+                  ? "Focus"
+                  : label}
+            </button>
+          ),
+        )}
         <button
+          ref={moreButton}
           onClick={() => setMoreOpen(true)}
-          id="nav-bottom-more"
           aria-haspopup="dialog"
           aria-expanded={moreOpen}
-          className="flex flex-1 flex-col items-center gap-0.5 py-1.5 text-[10px] font-semibold tracking-wide text-neutral-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+          className="flex min-h-16 flex-1 flex-col items-center justify-center gap-1 text-[10px] font-semibold text-neutral-500"
         >
-          <Menu className="h-5 w-5 text-neutral-500" />
-          <span>MORE</span>
+          <Menu className="h-5 w-5" aria-hidden="true" />
+          More
         </button>
       </nav>
-
-      {/* Mobile "More" sheet */}
       {moreOpen && (
         <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="More navigation"
-          className="fixed inset-0 z-50 flex flex-col justify-end bg-black/40 md:hidden"
+          className="fixed inset-0 z-50 flex items-end bg-[#102c26]/40 lg:hidden"
           onClick={() => setMoreOpen(false)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setMoreOpen(false);
-          }}
         >
           <div
-            className="max-h-[75vh] overflow-auto rounded-t-2xl bg-white p-4"
-            onClick={(e) => e.stopPropagation()}
+            ref={sheet}
+            role="dialog"
+            aria-modal="true"
+            aria-label="All workspace sections"
+            className="max-h-[85vh] w-full overflow-y-auto rounded-t-3xl bg-[#fdfefb] p-5"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setMoreOpen(false);
+              if (event.key !== "Tab") return;
+              const buttons: HTMLButtonElement[] = Array.from(
+                sheet.current?.querySelectorAll<HTMLButtonElement>("button") ??
+                  [],
+              );
+              const first = buttons[0];
+              const last = buttons[buttons.length - 1];
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+              }
+              if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+              }
+            }}
           >
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="font-serif text-base font-bold text-neutral-900">All sections</h2>
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="font-serif text-2xl text-[#193e37]">
+                Your workspace
+              </h2>
               <button
-                type="button"
                 onClick={() => setMoreOpen(false)}
-                aria-label="Close"
-                className="rounded-md p-1 text-neutral-400 hover:bg-neutral-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-500"
+                aria-label="Close navigation"
+                className="workspace-button"
               >
-                <X className="h-4 w-4" aria-hidden="true" />
+                <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              {TABS.map((tab) => renderTabButton(tab, 'sheet'))}
+            {navigation(true)}
+            <div className="mt-5 flex flex-wrap gap-2 border-t pt-4">
+              {tools}
             </div>
           </div>
         </div>

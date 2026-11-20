@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Video, ShieldCheck, AlertTriangle, Loader2, Info, Send, MessageSquareQuote } from 'lucide-react';
 import { useStore } from '../state/store';
 import type { GroundingInputs, ChatMessage } from '../state/chatGrounding';
+import { connectAvatar } from '../state/avatarConnection';
 
 /**
  * "Talk to FISH" — real-time anam.ai avatar (spec: AI companion / M4 avatar).
@@ -10,10 +11,9 @@ import type { GroundingInputs, ChatMessage } from '../state/chatGrounding';
  * (registered as an anam custom LLM at <APP_URL>/api/anam/llm). This view:
  *   1. checks /api/anam/status (never sees the key),
  *   2. asks the server for a short-lived session token,
- *   3. loads the anam browser SDK and streams the avatar into a <video> element.
- *
- * The anam SDK is loaded dynamically from a CDN so the app builds without a hard dependency,
- * and the whole feature stays inert (with an honest message) until ANAM_API_KEY is configured.
+ *   3. uses the installed SDK through the shared, cancellable avatar connection.
+ * Video starts on request with microphone input disabled. Typed replies use the grounded
+ * text-chat endpoint before being spoken by the connected avatar.
  */
 
 type Status =
@@ -24,13 +24,13 @@ type Status =
   | { state: 'live' }
   | { state: 'error'; message: string };
 
-const ANAM_SDK_URL = 'https://esm.sh/@anam-ai/js-sdk@latest';
-
 export const TalkView: React.FC = () => {
   const store = useStore();
   const [status, setStatus] = useState<Status>({ state: 'checking' });
   const videoRef = useRef<HTMLVideoElement>(null);
   const clientRef = useRef<any>(null);
+  const attemptRef = useRef<AbortController | null>(null);
+  const closeRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,9 +52,12 @@ export const TalkView: React.FC = () => {
     })();
     return () => {
       cancelled = true;
+      attemptRef.current?.abort();
+      attemptRef.current = null;
+      clientRef.current = null;
       // Best-effort teardown of any live session.
       try {
-        clientRef.current?.stopStreaming?.();
+        closeRef.current?.();
       } catch {
         /* ignore */
       }
@@ -62,43 +65,29 @@ export const TalkView: React.FC = () => {
   }, []);
 
   const start = async () => {
+    if (attemptRef.current || clientRef.current) return;
+    const controller = new AbortController();
+    attemptRef.current = controller;
     setStatus({ state: 'connecting' });
     try {
-      // 1) Short-lived token minted server-side (key never reaches the browser).
-      const tokenRes = await fetch('/api/anam/session-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientLabel: 'fish-scholar' }),
-      });
-      const tokenJson = await tokenRes.json();
-      if (!tokenRes.ok || !tokenJson.sessionToken) {
-        setStatus({ state: 'error', message: tokenJson.error || 'Could not start a session.' });
-        return;
-      }
-
-      // 2) Load the anam SDK dynamically (kept out of the bundle).
-      const mod: any = await import(/* @vite-ignore */ ANAM_SDK_URL);
-      const createClient = mod.createClient || mod.default?.createClient;
-      if (!createClient) {
-        setStatus({ state: 'error', message: 'The anam SDK could not be loaded in this environment.' });
-        return;
-      }
-
-      // 3) Start streaming into the <video> element.
-      const client = createClient(tokenJson.sessionToken);
-      clientRef.current = client;
-      if (videoRef.current) {
-        await client.streamToVideoElement(videoRef.current.id);
-      }
+      const connection = await connectAvatar('anam-video', { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      clientRef.current = connection.client;
+      closeRef.current = connection.close;
       setStatus({ state: 'live' });
     } catch (err: any) {
-      setStatus({ state: 'error', message: err?.message || 'The avatar session failed to start.' });
+      if (!controller.signal.aborted) setStatus({ state: 'error', message: err?.message || 'The avatar session failed to start.' });
+    } finally {
+      if (attemptRef.current === controller) attemptRef.current = null;
     }
   };
 
   const stop = () => {
     try {
-      clientRef.current?.stopStreaming?.();
+      attemptRef.current?.abort();
+      attemptRef.current = null;
+      closeRef.current?.();
+      closeRef.current = null;
     } catch {
       /* ignore */
     }
@@ -137,23 +126,18 @@ export const TalkView: React.FC = () => {
         <div className="rounded-2xl border border-neutral-200 bg-white p-4 text-sm text-neutral-600">
           {status.needsPersona ? (
             <>
-              <p className="font-medium text-neutral-800">Almost there — finish the avatar setup.</p>
+              <p className="font-medium text-neutral-800">Finish the avatar setup in Settings.</p>
               <p className="mt-1">
-                <code className="rounded bg-neutral-100 px-1">ANAM_API_KEY</code> is set, but the persona
-                isn't. Set <code className="rounded bg-neutral-100 px-1">ANAM_PERSONA_ID</code>, or all of{' '}
-                <code className="rounded bg-neutral-100 px-1">ANAM_AVATAR_ID</code>,{' '}
-                <code className="rounded bg-neutral-100 px-1">ANAM_VOICE_ID</code>, and{' '}
-                <code className="rounded bg-neutral-100 px-1">ANAM_LLM_ID</code> in your server{' '}
-                <code className="rounded bg-neutral-100 px-1">.env</code>, then reload.
+                Your key is present. Complete the saved persona or avatar, voice, and model details,
+                then return here to connect video.
               </p>
             </>
           ) : (
             <>
-              <p className="font-medium text-neutral-800">The avatar isn't configured yet.</p>
+              <p className="font-medium text-neutral-800">Add your avatar connection in Settings.</p>
               <p className="mt-1">
-                Add <code className="rounded bg-neutral-100 px-1">ANAM_API_KEY</code> to your server{' '}
-                <code className="rounded bg-neutral-100 px-1">.env</code> (never in the browser). Meanwhile,
-                the text-based <strong>Ask FISH</strong> tab already answers from your data.
+                Enter the avatar connection details in Settings, then return here. You can continue with
+                your guided Body double or text-based Ask FISH while video is being set up.
               </p>
             </>
           )}
@@ -203,6 +187,7 @@ export const TalkView: React.FC = () => {
               <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" /> Your key stays on the server
             </span>
           </div>
+          <p className="text-xs text-neutral-500">Video starts with the microphone off. Type below to hear your companion’s replies.</p>
         </div>
       )}
 
@@ -214,7 +199,7 @@ export const TalkView: React.FC = () => {
       )}
 
       {/* Text chat — always available, works even before the avatar is configured. */}
-      <TextChatPanel />
+      <TextChatPanel onReply={(reply) => { if (clientRef.current?.talk) void Promise.resolve(clientRef.current.talk(reply)).catch(() => {}); }} />
     </section>
   );
 };
@@ -244,7 +229,7 @@ interface Turn {
   note?: string;
 }
 
-const TextChatPanel: React.FC = () => {
+const TextChatPanel: React.FC<{ onReply?: (reply: string) => void }> = ({ onReply }) => {
   const buildInputs = useGroundingInputs();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
@@ -273,10 +258,12 @@ const TextChatPanel: React.FC = () => {
         body: JSON.stringify({ messages, groundingInputs: buildInputs() }),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'The companion could not reply.');
       setTurns((prev) => [
         ...prev,
         { role: 'assistant', content: data.reply || "I couldn't answer that.", note: data.note },
       ]);
+      if (data.reply) onReply?.(data.reply);
     } catch {
       setTurns((prev) => [
         ...prev,

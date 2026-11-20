@@ -19,6 +19,7 @@ import { CalendarView } from './components/CalendarView';
 import { StudyView } from './components/StudyView';
 import { DiscussionsView } from './components/DiscussionsView';
 import { SettingsView } from './components/SettingsView';
+import { SyllabusPanel } from './components/SyllabusPanel';
 import { QuickAddButton } from './components/QuickAdd';
 import { ChatView } from './components/ChatView';
 import { AnamAvatarModal } from './components/AnamAvatarModal';
@@ -40,13 +41,15 @@ import {
   Citation,
   AcademicMemoryNode,
   StudentProfile,
-  AuthorshipDossier
+  AuthorshipDossier,
+  CoachMessage
 } from './types';
 
 function AppShell() {
   const store = useStore();
   // Navigation — defaults to the store-backed Command Center (first-milestone experience).
   const [activeTab, setActiveTab] = useState<TabType>('COMMAND');
+  useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, [activeTab]);
 
   // Academic Knowledge Graph State
   const institutions = store.institutions;
@@ -73,6 +76,12 @@ function AppShell() {
 
   // Modals & Drawers
   const [isCompanionOpen, setIsCompanionOpen] = useState(false);
+  const [companionRole, setCompanionRole] = useState<CoachMessage['role']>('study_coach');
+  const openCompanionWithRole = (role: string) => {
+    const roles: CoachMessage['role'][] = ['study_coach', 'research_librarian', 'apa_coach', 'assignment_coach', 'access_coach', 'body_double'];
+    setCompanionRole(roles.includes(role as CoachMessage['role']) ? role as CoachMessage['role'] : 'study_coach');
+    setIsCompanionOpen(true);
+  };
   const [isAnamAvatarOpen, setIsAnamAvatarOpen] = useState(false);
   const [isNotionImportOpen, setIsNotionImportOpen] = useState(false);
   const archiveInputRef = useRef<HTMLInputElement>(null);
@@ -252,7 +261,7 @@ function AppShell() {
   const currentInstitution = institutions.find((i) => i.id === currentCourse?.institutionId);
 
   return (
-    <div className="min-h-screen bg-[#FDFDFD] text-neutral-900 font-sans antialiased selection:bg-amber-100 selection:text-amber-900">
+    <div className="personal-workspace min-h-screen text-neutral-900 font-sans antialiased selection:bg-teal-100 selection:text-teal-900 lg:pl-64">
       {/* Universal Academic Navbar */}
       <Navbar
         activeTab={activeTab}
@@ -268,12 +277,13 @@ function AppShell() {
         onQuickFocus={() => handleStartFocus(undefined, 20)}
       />
 
-      {activeTab === 'MATRIX' && <MatrixView />}
+      {activeTab === 'MATRIX' && <div id="workspace-main" tabIndex={-1}><MatrixView /></div>}
 
       {/* Main Content View Container */}
       {activeTab !== 'MATRIX' && (
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-6 pb-28 md:pb-24">
-        {activeTab === 'COMMAND' && <CommandCenterView />}
+      <main id="workspace-main" tabIndex={-1} className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-8 pb-28 md:pb-24">
+        {activeTab === 'COMMAND' && <CommandCenterView onNavigate={setActiveTab} />}
+        {activeTab === 'SYLLABUS' && <SyllabusPanel />}
 
         {activeTab === 'ASK' && <AskFishView />}
 
@@ -367,7 +377,9 @@ function AppShell() {
             initialAssignmentId={focusAssignmentId || selectedAssignmentId}
             initialMinutes={focusMinutes}
             onOpenWritingStudio={handleOpenWritingStudio}
-            onOpenCompanionWithRole={(role) => setIsCompanionOpen(true)}
+            onOpenCompanionWithRole={openCompanionWithRole}
+            onOpenAvatar={() => setIsAnamAvatarOpen(true)}
+            onSelectAssignment={setSelectedAssignmentId}
           />
         )}
 
@@ -377,7 +389,7 @@ function AppShell() {
             courses={courses}
             institutions={institutions}
             onUpdateProfile={handleUpdateProfile}
-            onOpenCompanionWithRole={(role) => setIsCompanionOpen(true)}
+            onOpenCompanionWithRole={openCompanionWithRole}
           />
         )}
       </main>
@@ -386,12 +398,14 @@ function AppShell() {
       {/* AI Companion Role-Based Coaching Drawer */}
       <CompanionDrawer
         isOpen={isCompanionOpen}
+        initialRole={companionRole}
         onClose={() => setIsCompanionOpen(false)}
         currentAssignment={currentAssignment}
         currentCourse={currentCourse}
         citations={citations}
         onStartFocus={handleStartFocus}
         onOpenWritingStudio={handleOpenWritingStudio}
+        onOpenAnamAvatar={() => setIsAnamAvatarOpen(true)}
       />
 
       {/* Syllabus Intelligence Modal */}

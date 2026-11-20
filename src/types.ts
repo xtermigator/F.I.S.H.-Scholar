@@ -8,6 +8,7 @@ export type TabType =
   | 'STUDY'
   | 'TODAY'
   | 'COURSES'
+  | 'SYLLABUS'
   | 'ASSIGNMENTS'
   | 'LIBRARY'
   | 'WRITE'

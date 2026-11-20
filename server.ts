@@ -23,6 +23,7 @@ import {
 import { composeGroundedMessages, type ChatMessage, type GroundingInputs } from "./src/state/chatGrounding";
 import { answerQuestion } from "./src/state/askFish";
 import { getKeyStatus, setKey } from "./src/server/keyStore";
+import { formatToSentenceCase as toApaSentenceCase } from "./src/lib/apa7Engine";
 
 dotenv.config();
 
